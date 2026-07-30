@@ -1,0 +1,9 @@
+server:
+  listen_port: 9200
+  run_id: "local-run"
+  protocol_version: 2
+
+model:
+  artifact_root: "models/published"
+  chunk_bytes: 1048576
+  contract_version: "0.3.0"
