@@ -105,15 +105,15 @@ bool LoadModelDistributorConfig(const std::string& yaml_path,
     const auto entries = ParseYaml(buffer.str());
     out_config.listen_port =
         SafeInt(FindValue(entries, "server", "listen_port"), 9200);
-    const std::string run_id = FindValue(entries, "server", "run_id");
-    if (!run_id.empty()) out_config.run_id = run_id;
     out_config.protocol_version = static_cast<uint32_t>(
-        SafeInt(FindValue(entries, "server", "protocol_version"), 1));
+        SafeInt(FindValue(entries, "server", "protocol_version"), 3));
     const std::string artifact_root =
         FindValue(entries, "model", "artifact_root");
     if (!artifact_root.empty()) out_config.artifact_root = artifact_root;
     out_config.chunk_bytes = SafeSize(
         FindValue(entries, "model", "chunk_bytes"), 1024 * 1024);
+    out_config.retention_versions = SafeSize(
+        FindValue(entries, "model", "retention_versions"), 2);
     const std::string contract_version =
         FindValue(entries, "model", "contract_version");
     if (!contract_version.empty()) {
@@ -124,13 +124,17 @@ bool LoadModelDistributorConfig(const std::string& yaml_path,
     if (!env_port.empty()) {
         out_config.listen_port = SafeInt(env_port, out_config.listen_port);
     }
-    const std::string env_run_id = Env("MAZE_RUN_ID");
-    if (!env_run_id.empty()) out_config.run_id = env_run_id;
     const std::string env_root = Env("MAZE_MODEL_ARTIFACT_ROOT");
     if (!env_root.empty()) out_config.artifact_root = env_root;
     const std::string env_chunk = Env("MAZE_MODEL_CHUNK_BYTES");
     if (!env_chunk.empty()) {
         out_config.chunk_bytes = SafeSize(env_chunk, out_config.chunk_bytes);
+    }
+    const std::string env_retention =
+        Env("MAZE_MODEL_RETENTION_VERSIONS");
+    if (!env_retention.empty()) {
+        out_config.retention_versions = SafeSize(
+            env_retention, out_config.retention_versions);
     }
 
     if (out_config.listen_port <= 0 || out_config.listen_port > 65535) {
@@ -139,6 +143,10 @@ bool LoadModelDistributorConfig(const std::string& yaml_path,
     if (out_config.chunk_bytes == 0 ||
         out_config.chunk_bytes > 4 * 1024 * 1024) {
         out_config.chunk_bytes = 1024 * 1024;
+    }
+    if (out_config.retention_versions == 0 ||
+        out_config.retention_versions > 32) {
+        out_config.retention_versions = 2;
     }
     return true;
 }

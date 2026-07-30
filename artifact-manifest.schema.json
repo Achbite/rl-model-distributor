@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rl-training.local/schemas/model-artifact-manifest-0.1.0.json",
+  "$id": "https://rl-training.local/schemas/model-artifact-manifest-0.2.0.json",
   "title": "RL model artifact manifest",
   "type": "object",
   "additionalProperties": false,
@@ -8,7 +8,6 @@
     "schema_version",
     "contract_version",
     "model_version",
-    "run_id",
     "artifact_uri",
     "sha256",
     "ready"
@@ -24,10 +23,6 @@
     "model_version": {
       "type": "integer",
       "minimum": 0
-    },
-    "run_id": {
-      "type": "string",
-      "minLength": 1
     },
     "artifact_uri": {
       "type": "string",

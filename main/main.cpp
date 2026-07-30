@@ -26,7 +26,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     std::cout << "[ModelDistributor] listening on " << address
-              << ", run_id=" << config.run_id
               << ", instance_id=" << service.instance_id() << std::endl;
     server->Wait();
     return 0;

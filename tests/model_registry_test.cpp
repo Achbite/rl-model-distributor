@@ -14,12 +14,12 @@ int Fail(const std::string& message) {
 }
 
 maze::ModelArtifactManifest Manifest(const std::filesystem::path& path,
-                                     const std::string& checksum) {
+                                     const std::string& checksum,
+                                     int version = 0) {
     maze::ModelArtifactManifest manifest;
     manifest.set_schema_version(1);
-    manifest.set_contract_version("0.3.0");
-    manifest.set_run_id("test-run");
-    manifest.set_model_version(0);
+    manifest.set_contract_version("0.5.0");
+    manifest.set_model_version(version);
     manifest.set_artifact_uri("file://" + path.string());
     manifest.set_model_file(path.filename().string());
     manifest.set_size_bytes(
@@ -42,8 +42,8 @@ maze::ModelArtifactManifest Manifest(const std::filesystem::path& path,
 int main() {
     const auto root = std::filesystem::temp_directory_path() /
                       ("model-registry-test-" + std::to_string(::getpid()));
-    std::filesystem::create_directories(root / "test-run");
-    const auto model_path = root / "test-run/model_v000000.onnx";
+    std::filesystem::create_directories(root / "serving");
+    const auto model_path = root / "serving/model_v000000.onnx";
     {
         std::ofstream output(model_path, std::ios::binary);
         output << "deterministic-model";
@@ -53,9 +53,9 @@ int main() {
     if (!ComputeSha256(model_path, &checksum, &error)) return Fail(error);
 
     ModelDistributorConfig config;
-    config.run_id = "test-run";
     config.artifact_root = root.string();
-    config.contract_version = "0.3.0";
+    config.contract_version = "0.5.0";
+    config.retention_versions = 2;
     ModelRegistry registry(config);
 
     RegisteredModel record;
@@ -72,13 +72,13 @@ int main() {
     auto equivalent = manifest;
     equivalent.set_published_ts_ms(2);
     equivalent.set_artifact_uri(
-        "file://" + (root / "test-run/../test-run/model_v000000.onnx").string());
+        "file://" + (root / "serving/../serving/model_v000000.onnx").string());
     if (registry.Register(equivalent, &record, &message) !=
         maze::MODEL_REGISTER_RESULT_ALREADY_REGISTERED) {
         return Fail("equivalent model identity was not idempotent");
     }
     const auto replacement_path =
-        root / "test-run/model_v000000_replacement.onnx";
+        root / "serving/model_v000000_replacement.onnx";
     {
         std::ofstream output(replacement_path, std::ios::binary);
         output << "different-model";
@@ -115,20 +115,19 @@ int main() {
         return Fail("outside artifact path was accepted");
     }
 
-    if (!registry.Get("test-run", 0, &record, &message) ||
+    if (!registry.Get(0, &record, &message) ||
         record.manifest.sha256() != checksum) {
         return Fail("registered model lookup failed");
     }
-    if (!registry.GetLatest("test-run", &record, &message) ||
+    if (!registry.GetLatest(&record, &message) ||
         record.manifest.model_version() != 0) {
         return Fail("latest registered model lookup failed");
     }
-    if (registry.Get("test-run", 99, &record, &message)) {
+    if (registry.Get(99, &record, &message)) {
         return Fail("unknown model lookup succeeded");
     }
 
     maze::AckModelReq ack;
-    ack.set_run_id("test-run");
     ack.set_aiserver_id("aiserver-0");
     ack.set_model_version(0);
     ack.set_sha256(checksum);
@@ -145,12 +144,44 @@ int main() {
     }
 
     maze::ModelDistributorStatusRsp status;
-    registry.GetStatus("test-run", &status);
+    registry.GetStatus(&status);
     if (!status.ready() || status.registered_model_count() != 1 ||
         status.loaded_ack_count() != 1 ||
         status.duplicate_register_count() != 2 ||
         status.rejected_register_count() != 3) {
         return Fail("status counters do not match registry operations");
+    }
+
+    for (int version = 1; version <= 2; ++version) {
+        const auto version_path =
+            root / "serving" /
+            ("model_v" + std::string(5, '0') +
+             std::to_string(version) + ".onnx");
+        {
+            std::ofstream output(version_path, std::ios::binary);
+            output << "model-version-" << version;
+        }
+        std::string version_checksum;
+        if (!ComputeSha256(version_path, &version_checksum, &error)) {
+            return Fail(error);
+        }
+        auto version_manifest =
+            Manifest(version_path, version_checksum, version);
+        if (registry.Register(version_manifest, &record, &message) !=
+            maze::MODEL_REGISTER_RESULT_REGISTERED) {
+            return Fail("retained version register failed: " + message);
+        }
+    }
+    if (registry.Get(0, &record, &message)) {
+        return Fail("old model version was not evicted");
+    }
+    if (!registry.Get(1, &record, &message) ||
+        !registry.Get(2, &record, &message)) {
+        return Fail("serving retention removed a current model");
+    }
+    registry.GetStatus(&status);
+    if (status.registered_model_count() != 2) {
+        return Fail("serving retention count is not bounded");
     }
     std::filesystem::remove_all(root);
     return 0;

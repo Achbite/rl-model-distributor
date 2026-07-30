@@ -7,6 +7,7 @@
 #include <chrono>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
 #include <limits>
 #include <sstream>
 #include <unistd.h>
@@ -49,7 +50,6 @@ bool ManifestIdentityEqual(const maze::ModelArtifactManifest& left,
                            const maze::ModelArtifactManifest& right) {
     return left.schema_version() == right.schema_version() &&
            left.contract_version() == right.contract_version() &&
-           left.run_id() == right.run_id() &&
            left.model_version() == right.model_version() &&
            left.model_file() == right.model_file() &&
            left.size_bytes() == right.size_bytes() &&
@@ -155,11 +155,6 @@ bool ModelRegistry::ValidateManifest(
         *error = "manifest contract_version does not match service";
         return false;
     }
-    if (manifest.run_id().empty() ||
-        (!config_.run_id.empty() && manifest.run_id() != config_.run_id)) {
-        *error = "manifest run_id does not match service";
-        return false;
-    }
     if (manifest.model_version() < 0 || !manifest.ready()) {
         *error = "manifest model_version or ready state is invalid";
         return false;
@@ -230,7 +225,7 @@ maze::ModelRegisterResult ModelRegistry::Register(
 
     std::lock_guard<std::mutex> lock(mutex_);
     ++register_attempt_count_;
-    const ModelKey key{manifest.run_id(), manifest.model_version()};
+    const int key = manifest.model_version();
     const auto existing = models_.find(key);
     if (existing != models_.end()) {
         if (ManifestIdentityEqual(existing->second.manifest, manifest)) {
@@ -245,19 +240,43 @@ maze::ModelRegisterResult ModelRegistry::Register(
         return maze::MODEL_REGISTER_RESULT_REJECTED_CONFLICT;
     }
 
+    if (latest_version_seen_ >= 0 &&
+        manifest.model_version() <=
+            latest_version_seen_ -
+                static_cast<int>(config_.retention_versions)) {
+        ++rejected_register_count_;
+        last_error_ = "model version is outside the serving retention window";
+        *message = last_error_;
+        return maze::MODEL_REGISTER_RESULT_REJECTED_INVALID;
+    }
+
     RegisteredModel record{manifest, model_path};
     models_.emplace(key, record);
+    latest_version_seen_ =
+        std::max(latest_version_seen_, manifest.model_version());
+
+    while (models_.size() > config_.retention_versions) {
+        const int removed = models_.begin()->first;
+        models_.erase(models_.begin());
+        for (auto ack = acknowledgements_.begin();
+             ack != acknowledgements_.end();) {
+            if (ack->first.first == removed) {
+                ack = acknowledgements_.erase(ack);
+            } else {
+                ++ack;
+            }
+        }
+    }
     *registered = record;
     *message = "model registered";
     return maze::MODEL_REGISTER_RESULT_REGISTERED;
 }
 
-bool ModelRegistry::Get(const std::string& run_id,
-                        int model_version,
+bool ModelRegistry::Get(int model_version,
                         RegisteredModel* model,
                         std::string* message) {
     std::lock_guard<std::mutex> lock(mutex_);
-    const auto found = models_.find({run_id, model_version});
+    const auto found = models_.find(model_version);
     if (found == models_.end()) {
         last_error_ = "model not found";
         *message = last_error_;
@@ -268,23 +287,15 @@ bool ModelRegistry::Get(const std::string& run_id,
     return true;
 }
 
-bool ModelRegistry::GetLatest(const std::string& run_id,
-                              RegisteredModel* model,
+bool ModelRegistry::GetLatest(RegisteredModel* model,
                               std::string* message) {
     std::lock_guard<std::mutex> lock(mutex_);
-    auto found = models_.end();
-    for (auto it = models_.begin(); it != models_.end(); ++it) {
-        if (it->first.first == run_id &&
-            (found == models_.end() ||
-             it->first.second > found->first.second)) {
-            found = it;
-        }
-    }
-    if (found == models_.end()) {
+    if (models_.empty()) {
         last_error_ = "model not found";
         *message = last_error_;
         return false;
     }
+    const auto found = std::prev(models_.end());
     *model = found->second;
     *message = "latest model found";
     return true;
@@ -293,8 +304,7 @@ bool ModelRegistry::GetLatest(const std::string& run_id,
 maze::ModelAckResult ModelRegistry::Ack(const maze::AckModelReq& request,
                                         std::string* message) {
     std::lock_guard<std::mutex> lock(mutex_);
-    const auto model =
-        models_.find({request.run_id(), request.model_version()});
+    const auto model = models_.find(request.model_version());
     if (model == models_.end()) {
         *message = "model not found";
         last_error_ = *message;
@@ -308,8 +318,7 @@ maze::ModelAckResult ModelRegistry::Ack(const maze::AckModelReq& request,
         return maze::MODEL_ACK_RESULT_REJECTED;
     }
 
-    const AckKey key{request.run_id(), request.model_version(),
-                     request.aiserver_id()};
+    const AckKey key{request.model_version(), request.aiserver_id()};
     const auto existing = acknowledgements_.find(key);
     if (existing != acknowledgements_.end()) {
         if (AckEqual(existing->second, request)) {
@@ -353,21 +362,18 @@ void ModelRegistry::RecordDownloadFailure(const std::string& error) {
 }
 
 void ModelRegistry::GetStatus(
-    const std::string& run_id,
     maze::ModelDistributorStatusRsp* response) const {
     std::lock_guard<std::mutex> lock(mutex_);
     response->set_protocol_version(config_.protocol_version);
-    response->set_run_id(config_.run_id);
     response->set_distributor_instance_id(instance_id_);
-    response->set_ready(run_id.empty() || run_id == config_.run_id);
+    response->set_ready(true);
     response->set_registered_model_count(
         static_cast<int64_t>(models_.size()));
     int latest_version = -1;
     std::string latest_checksum;
     for (const auto& item : models_) {
-        if (item.first.first == config_.run_id &&
-            item.first.second > latest_version) {
-            latest_version = item.first.second;
+        if (item.first > latest_version) {
+            latest_version = item.first;
             latest_checksum = item.second.manifest.sha256();
         }
     }

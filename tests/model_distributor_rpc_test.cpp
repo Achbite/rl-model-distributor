@@ -23,8 +23,7 @@ maze::ModelArtifactManifest BuildManifest(
     const std::string& checksum) {
     maze::ModelArtifactManifest manifest;
     manifest.set_schema_version(1);
-    manifest.set_contract_version("0.3.0");
-    manifest.set_run_id("rpc-test-run");
+    manifest.set_contract_version("0.5.0");
     manifest.set_model_version(0);
     manifest.set_artifact_uri("file://" + path.string());
     manifest.set_model_file(path.filename().string());
@@ -50,9 +49,9 @@ int main() {
     const fs::path root = fs::temp_directory_path() /
                           ("model-distributor-rpc-" +
                            std::to_string(::getpid()));
-    fs::create_directories(root / "rpc-test-run");
+    fs::create_directories(root / "serving");
     const fs::path model_path =
-        root / "rpc-test-run/model_v000000.onnx";
+        root / "serving/model_v000000.onnx";
     const std::string expected_payload =
         "0123456789abcdefghijklmnopqrstuvwxyz";
     {
@@ -66,9 +65,8 @@ int main() {
         return Fail(error);
     }
     ModelDistributorConfig config;
-    config.run_id = "rpc-test-run";
     config.artifact_root = root.string();
-    config.contract_version = "0.3.0";
+    config.contract_version = "0.5.0";
     config.chunk_bytes = 5;
     ModelDistributorServiceImpl service(config);
 
@@ -120,7 +118,6 @@ int main() {
     }
 
     maze::DownloadModelReq download_request;
-    download_request.set_run_id("rpc-test-run");
     download_request.set_model_version(0);
     download_request.set_aiserver_id("aiserver-0");
     grpc::ClientContext download_context;
@@ -131,7 +128,6 @@ int main() {
     std::string reconstructed;
     while (reader->Read(&chunk)) {
         if (chunk.offset() != expected_offset ||
-            chunk.run_id() != "rpc-test-run" ||
             chunk.model_version() != 0) {
             server->Shutdown();
             fs::remove_all(root);
@@ -148,7 +144,6 @@ int main() {
     }
 
     maze::GetModelManifestReq unknown_request;
-    unknown_request.set_run_id("rpc-test-run");
     unknown_request.set_model_version(99);
     maze::GetModelManifestRsp unknown_response;
     grpc::ClientContext unknown_context;
@@ -161,7 +156,6 @@ int main() {
     }
 
     maze::GetModelManifestReq latest_request;
-    latest_request.set_run_id("rpc-test-run");
     latest_request.set_aiserver_id("aiserver-0");
     latest_request.set_latest(true);
     maze::GetModelManifestRsp latest_response;
@@ -176,7 +170,6 @@ int main() {
     }
 
     maze::AckModelReq ack_request;
-    ack_request.set_run_id("rpc-test-run");
     ack_request.set_aiserver_id("aiserver-0");
     ack_request.set_model_version(0);
     ack_request.set_sha256(checksum);

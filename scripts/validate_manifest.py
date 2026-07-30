@@ -16,7 +16,6 @@ def main() -> int:
         "schema_version",
         "contract_version",
         "model_version",
-        "run_id",
         "artifact_uri",
         "sha256",
         "ready",
@@ -29,8 +28,6 @@ def main() -> int:
         raise ValueError("contract_version must be a supported 0.x version")
     if not isinstance(data["model_version"], int) or data["model_version"] < 0:
         raise ValueError("model_version must be a non-negative integer")
-    if not isinstance(data["run_id"], str) or not data["run_id"]:
-        raise ValueError("run_id must be non-empty")
     if not isinstance(data["artifact_uri"], str) or not data["artifact_uri"]:
         raise ValueError("artifact_uri must be non-empty")
     if not re.fullmatch(r"[a-f0-9]{64}", data["sha256"]):

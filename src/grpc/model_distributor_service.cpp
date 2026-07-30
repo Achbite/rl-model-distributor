@@ -44,9 +44,8 @@ grpc::Status ModelDistributorServiceImpl::GetModelManifest(
     RegisteredModel record;
     std::string message;
     const bool found = request->latest()
-        ? registry_.GetLatest(request->run_id(), &record, &message)
-        : registry_.Get(
-              request->run_id(), request->model_version(), &record, &message);
+        ? registry_.GetLatest(&record, &message)
+        : registry_.Get(request->model_version(), &record, &message);
     if (!found) {
         response->set_ret_code(-1);
         response->set_message(message);
@@ -67,8 +66,7 @@ grpc::Status ModelDistributorServiceImpl::DownloadModel(
     registry_.RecordDownloadAttempt();
     RegisteredModel record;
     std::string message;
-    if (!registry_.Get(
-            request->run_id(), request->model_version(), &record, &message)) {
+    if (!registry_.Get(request->model_version(), &record, &message)) {
         registry_.RecordDownloadFailure(message);
         return grpc::Status(grpc::StatusCode::NOT_FOUND, message);
     }
@@ -86,7 +84,6 @@ grpc::Status ModelDistributorServiceImpl::DownloadModel(
         const std::streamsize count = input.gcount();
         if (count <= 0) break;
         maze::ModelChunk chunk;
-        chunk.set_run_id(request->run_id());
         chunk.set_model_version(request->model_version());
         chunk.set_offset(offset);
         chunk.set_data(buffer.data(), static_cast<std::size_t>(count));
@@ -125,9 +122,9 @@ grpc::Status ModelDistributorServiceImpl::AckModel(
 
 grpc::Status ModelDistributorServiceImpl::GetModelDistributorStatus(
     grpc::ServerContext*,
-    const maze::ModelDistributorStatusReq* request,
+    const maze::ModelDistributorStatusReq*,
     maze::ModelDistributorStatusRsp* response) {
-    registry_.GetStatus(request->run_id(), response);
+    registry_.GetStatus(response);
     return grpc::Status::OK;
 }
 
