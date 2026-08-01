@@ -23,7 +23,7 @@ maze::ModelArtifactManifest BuildManifest(
     const std::string& checksum) {
     maze::ModelArtifactManifest manifest;
     manifest.set_schema_version(1);
-    manifest.set_contract_version("0.5.0");
+    manifest.set_contract_version("0.6.0");
     manifest.set_model_version(0);
     manifest.set_artifact_uri("file://" + path.string());
     manifest.set_model_file(path.filename().string());
@@ -66,7 +66,7 @@ int main() {
     }
     ModelDistributorConfig config;
     config.artifact_root = root.string();
-    config.contract_version = "0.5.0";
+    config.contract_version = "0.6.0";
     config.chunk_bytes = 5;
     ModelDistributorServiceImpl service(config);
 

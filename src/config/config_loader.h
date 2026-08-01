@@ -10,7 +10,7 @@ struct ModelDistributorConfig {
     std::string artifact_root = "models/local-train";
     std::size_t chunk_bytes = 1024 * 1024;
     std::size_t retention_versions = 2;
-    std::string contract_version = "0.5.0";
+    std::string contract_version = "0.6.0";
 };
 
 bool LoadModelDistributorConfig(const std::string& yaml_path,

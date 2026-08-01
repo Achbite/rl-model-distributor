@@ -6,4 +6,4 @@ model:
   artifact_root: "models/local-train"
   chunk_bytes: 1048576
   retention_versions: 2
-  contract_version: "0.5.0"
+  contract_version: "0.6.0"
