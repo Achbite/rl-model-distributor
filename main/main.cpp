@@ -11,7 +11,9 @@ int main(int argc, char* argv[]) {
     const std::string config_path =
         argc > 1 ? argv[1] : "configs/model_distributor_config.yaml";
     ModelDistributorConfig config;
-    LoadModelDistributorConfig(config_path, config);
+    if (!LoadModelDistributorConfig(config_path, config)) {
+        return 2;
+    }
 
     ModelDistributorServiceImpl service(config);
     const std::string address =

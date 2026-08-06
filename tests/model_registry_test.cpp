@@ -1,4 +1,4 @@
-#include "store/model_registry.h"
+#include "test_helpers.h"
 
 #include <filesystem>
 #include <fstream>
@@ -9,180 +9,156 @@
 namespace {
 
 int Fail(const std::string& message) {
-    std::cerr << message << std::endl;
+    std::cerr << "FAIL: " << message << std::endl;
     return 1;
 }
 
-maze::ModelArtifactManifest Manifest(const std::filesystem::path& path,
-                                     const std::string& checksum,
-                                     int version = 0) {
-    maze::ModelArtifactManifest manifest;
-    manifest.set_schema_version(1);
-    manifest.set_contract_version("0.6.0");
-    manifest.set_model_version(version);
-    manifest.set_artifact_uri("file://" + path.string());
-    manifest.set_model_file(path.filename().string());
-    manifest.set_size_bytes(
-        static_cast<int64_t>(std::filesystem::file_size(path)));
-    manifest.set_sha256(checksum);
-    manifest.add_input_shape(1);
-    manifest.add_input_shape(13);
-    manifest.add_action_shape(1);
-    manifest.add_action_shape(9);
-    manifest.add_value_shape(1);
-    manifest.add_value_shape(1);
-    manifest.set_seed(0);
-    manifest.set_ready(true);
-    manifest.set_published_ts_ms(1);
-    return manifest;
+bool WriteModel(const std::filesystem::path& path,
+                const std::string& payload,
+                std::string* digest) {
+    std::ofstream output(path, std::ios::binary);
+    output << payload;
+    output.close();
+    std::string error;
+    return ComputeSha256(path, digest, &error);
 }
 
 }  // namespace
 
 int main() {
-    const auto root = std::filesystem::temp_directory_path() /
-                      ("model-registry-test-" + std::to_string(::getpid()));
-    std::filesystem::create_directories(root / "serving");
-    const auto model_path = root / "serving/model_v000000.onnx";
-    {
-        std::ofstream output(model_path, std::ios::binary);
-        output << "deterministic-model";
-    }
+    namespace fs = std::filesystem;
+    using namespace test_helpers;
+    const fs::path root = fs::temp_directory_path() /
+                          ("model-registry-test-" + std::to_string(::getpid()));
+    fs::create_directories(root / "serving");
+    const fs::path model_path = root / "serving/model_v000000.onnx";
     std::string checksum;
-    std::string error;
-    if (!ComputeSha256(model_path, &checksum, &error)) return Fail(error);
-
-    ModelDistributorConfig config;
-    config.artifact_root = root.string();
-    config.contract_version = "0.6.0";
-    config.retention_versions = 2;
-    ModelRegistry registry(config);
-
+    if (!WriteModel(model_path, "deterministic-model", &checksum)) {
+        return Fail("failed to create model artifact");
+    }
+    ModelRegistry registry(Config(root));
     RegisteredModel record;
     std::string message;
     auto manifest = Manifest(model_path, checksum);
     if (registry.Register(manifest, &record, &message) !=
-        maze::MODEL_REGISTER_RESULT_REGISTERED) {
+        rl::training::v1::MODEL_REGISTER_RESULT_REGISTERED) {
         return Fail("initial register failed: " + message);
     }
     if (registry.Register(manifest, &record, &message) !=
-        maze::MODEL_REGISTER_RESULT_ALREADY_REGISTERED) {
-        return Fail("duplicate register was not idempotent");
-    }
-    auto equivalent = manifest;
-    equivalent.set_published_ts_ms(2);
-    equivalent.set_artifact_uri(
-        "file://" + (root / "serving/../serving/model_v000000.onnx").string());
-    if (registry.Register(equivalent, &record, &message) !=
-        maze::MODEL_REGISTER_RESULT_ALREADY_REGISTERED) {
-        return Fail("equivalent model identity was not idempotent");
-    }
-    const auto replacement_path =
-        root / "serving/model_v000000_replacement.onnx";
-    {
-        std::ofstream output(replacement_path, std::ios::binary);
-        output << "different-model";
-    }
-    std::string replacement_checksum;
-    if (!ComputeSha256(
-            replacement_path, &replacement_checksum, &error)) {
-        return Fail(error);
-    }
-    auto checksum_conflict = manifest;
-    checksum_conflict.set_artifact_uri(
-        "file://" + replacement_path.string());
-    checksum_conflict.set_model_file(
-        replacement_path.filename().string());
-    checksum_conflict.set_size_bytes(
-        static_cast<int64_t>(
-            std::filesystem::file_size(replacement_path)));
-    checksum_conflict.set_sha256(replacement_checksum);
-    if (registry.Register(checksum_conflict, &record, &message) !=
-        maze::MODEL_REGISTER_RESULT_REJECTED_CONFLICT) {
-        return Fail("same-version checksum conflict was accepted");
-    }
-    auto conflicting = manifest;
-    conflicting.set_seed(1);
-    if (registry.Register(conflicting, &record, &message) !=
-        maze::MODEL_REGISTER_RESULT_REJECTED_CONFLICT) {
-        return Fail("conflicting register was accepted");
+        rl::training::v1::MODEL_REGISTER_RESULT_ALREADY_REGISTERED) {
+        return Fail("exact manifest retry was not idempotent");
     }
 
+    auto manifest_conflict = manifest;
+    manifest_conflict.set_seed(1);
+    RefreshManifestDigest(&manifest_conflict);
+    if (registry.Register(manifest_conflict, &record, &message) !=
+        rl::training::v1::MODEL_REGISTER_RESULT_REJECTED_CONFLICT) {
+        return Fail("lineage/version manifest conflict was accepted");
+    }
+    auto stale_contract = manifest;
+    stale_contract.mutable_contract()->set_package_version("0.7.0");
+    RefreshManifestDigest(&stale_contract);
+    if (registry.Register(stale_contract, &record, &message) !=
+        rl::training::v1::MODEL_REGISTER_RESULT_REJECTED_INVALID) {
+        return Fail("old contract identity was accepted");
+    }
+    auto bad_manifest_digest = manifest;
+    bad_manifest_digest.mutable_identity()->mutable_manifest_digest()->set_hex(
+        std::string(64, '0'));
+    if (registry.Register(bad_manifest_digest, &record, &message) !=
+        rl::training::v1::MODEL_REGISTER_RESULT_REJECTED_INVALID) {
+        return Fail("incorrect canonical manifest digest was accepted");
+    }
     auto outside = manifest;
     outside.set_artifact_uri("file:///tmp/outside.onnx");
+    RefreshManifestDigest(&outside);
     if (registry.Register(outside, &record, &message) !=
-        maze::MODEL_REGISTER_RESULT_REJECTED_INVALID) {
+        rl::training::v1::MODEL_REGISTER_RESULT_REJECTED_INVALID) {
         return Fail("outside artifact path was accepted");
     }
 
-    if (!registry.Get(0, &record, &message) ||
-        record.manifest.sha256() != checksum) {
-        return Fail("registered model lookup failed");
+    if (!registry.Get(manifest.identity(), &record, &message) ||
+        record.manifest.identity().artifact_digest().hex() != checksum) {
+        return Fail("exact registered identity lookup failed");
     }
-    if (!registry.GetLatest(&record, &message) ||
-        record.manifest.model_version() != 0) {
-        return Fail("latest registered model lookup failed");
+    auto wrong_identity = manifest.identity();
+    wrong_identity.mutable_artifact_digest()->set_hex(std::string(64, 'f'));
+    if (registry.Get(wrong_identity, &record, &message)) {
+        return Fail("same version with wrong digest was returned");
     }
-    if (registry.Get(99, &record, &message)) {
-        return Fail("unknown model lookup succeeded");
+    if (!registry.GetLatest("maze-fixed-map-seed-0", &record, &message) ||
+        record.manifest.identity().model_version() != 0) {
+        return Fail("lineage latest lookup failed");
     }
 
-    maze::AckModelReq ack;
-    ack.set_aiserver_id("aiserver-0");
-    ack.set_model_version(0);
-    ack.set_sha256(checksum);
-    ack.set_load_status(maze::MODEL_LOAD_STATUS_LOADED);
+    rl::training::v1::AckModelReq ack;
+    Service(ack.mutable_aiserver(), "aiserver", "aiserver-0");
+    *ack.mutable_model() = manifest.identity();
+    ack.set_load_instance_id("load-0");
+    ack.set_load_status(rl::training::v1::MODEL_LOAD_STATUS_LOADED);
     ack.set_message("loaded");
-    if (registry.Ack(ack, &message) != maze::MODEL_ACK_RESULT_APPLIED) {
+    if (registry.Ack(ack, &message) !=
+        rl::training::v1::MODEL_ACK_RESULT_APPLIED) {
         return Fail("initial model ACK was rejected");
     }
-    auto equivalent_ack = ack;
-    equivalent_ack.set_message("loaded after retry");
-    if (registry.Ack(equivalent_ack, &message) !=
-        maze::MODEL_ACK_RESULT_ALREADY_APPLIED) {
-        return Fail("model ACK was not idempotent");
+    auto retry = ack;
+    retry.set_message("diagnostic text may differ on retry");
+    if (registry.Ack(retry, &message) !=
+        rl::training::v1::MODEL_ACK_RESULT_ALREADY_APPLIED) {
+        return Fail("same load identity was not idempotent");
+    }
+    auto ack_conflict = ack;
+    ack_conflict.set_load_status(rl::training::v1::MODEL_LOAD_STATUS_FAILED);
+    if (registry.Ack(ack_conflict, &message) !=
+        rl::training::v1::MODEL_ACK_RESULT_REJECTED) {
+        return Fail("load idempotency conflict was accepted");
     }
 
-    maze::ModelDistributorStatusRsp status;
-    registry.GetStatus(&status);
-    if (!status.ready() || status.registered_model_count() != 1 ||
-        status.loaded_ack_count() != 1 ||
-        status.duplicate_register_count() != 2 ||
-        status.rejected_register_count() != 3) {
-        return Fail("status counters do not match registry operations");
-    }
-
-    for (int version = 1; version <= 2; ++version) {
-        const auto version_path =
-            root / "serving" /
-            ("model_v" + std::string(5, '0') +
-             std::to_string(version) + ".onnx");
-        {
-            std::ofstream output(version_path, std::ios::binary);
-            output << "model-version-" << version;
+    for (uint64_t version = 1; version <= 2; ++version) {
+        const fs::path path = root / "serving" /
+                              ("model_v00000" + std::to_string(version) +
+                               ".onnx");
+        std::string digest;
+        if (!WriteModel(path, "model-version-" + std::to_string(version),
+                        &digest)) {
+            return Fail("failed to create retained model");
         }
-        std::string version_checksum;
-        if (!ComputeSha256(version_path, &version_checksum, &error)) {
-            return Fail(error);
-        }
-        auto version_manifest =
-            Manifest(version_path, version_checksum, version);
-        if (registry.Register(version_manifest, &record, &message) !=
-            maze::MODEL_REGISTER_RESULT_REGISTERED) {
+        auto next = Manifest(path, digest, version);
+        if (registry.Register(next, &record, &message) !=
+            rl::training::v1::MODEL_REGISTER_RESULT_REGISTERED) {
             return Fail("retained version register failed: " + message);
         }
     }
-    if (registry.Get(0, &record, &message)) {
-        return Fail("old model version was not evicted");
+    if (registry.Get(manifest.identity(), &record, &message)) {
+        return Fail("old exact model was not evicted");
     }
-    if (!registry.Get(1, &record, &message) ||
-        !registry.Get(2, &record, &message)) {
-        return Fail("serving retention removed a current model");
+    if (!registry.GetLatest("maze-fixed-map-seed-0", &record, &message) ||
+        record.manifest.identity().model_version() != 2) {
+        return Fail("latest lineage identity is incorrect after retention");
     }
+    if (!registry.GetByVersion("maze-fixed-map-seed-0", 1,
+                               &record, &message) ||
+        record.manifest.identity().model_version() != 1) {
+        return Fail("retained model version selector failed");
+    }
+    if (registry.GetByVersion("maze-fixed-map-seed-0", 0,
+                              &record, &message)) {
+        return Fail("evicted model version selector unexpectedly succeeded");
+    }
+
+    rl::training::v1::ModelDistributorStatusRsp status;
     registry.GetStatus(&status);
-    if (status.registered_model_count() != 2) {
-        return Fail("serving retention count is not bounded");
+    if (!status.ready() || status.registered_model_count() != 2 ||
+        status.latest_model().model_version() != 2 ||
+        status.loaded_ack_count() != 1 ||
+        status.duplicate_register_count() != 1 ||
+        status.rejected_register_count() != 4 ||
+        status.contract().package_version() != "0.8.0" ||
+        status.distributor().component() != "model-distributor") {
+        return Fail("status identity or counters do not match operations");
     }
-    std::filesystem::remove_all(root);
+    fs::remove_all(root);
+    std::cout << "model_registry_contract: PASS" << std::endl;
     return 0;
 }

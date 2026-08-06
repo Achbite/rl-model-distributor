@@ -15,8 +15,9 @@ if(NOT CONTRACT_CPP_DIR)
 endif()
 
 set(PROTO_SOURCES
-    ${CONTRACT_CPP_DIR}/maze.pb.cc
-    ${CONTRACT_CPP_DIR}/maze.grpc.pb.cc
+    ${CONTRACT_CPP_DIR}/common.pb.cc
+    ${CONTRACT_CPP_DIR}/training.pb.cc
+    ${CONTRACT_CPP_DIR}/training.grpc.pb.cc
 )
 
 set(SOURCES
@@ -46,7 +47,8 @@ if(BUILD_TESTING)
         tests/model_registry_test.cpp
         src/config/config_loader.cpp
         src/store/model_registry.cpp
-        ${CONTRACT_CPP_DIR}/maze.pb.cc
+        ${CONTRACT_CPP_DIR}/common.pb.cc
+        ${CONTRACT_CPP_DIR}/training.pb.cc
     )
     target_include_directories(model_registry_test PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src

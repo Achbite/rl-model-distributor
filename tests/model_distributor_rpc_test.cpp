@@ -1,6 +1,5 @@
 #include "grpc/model_distributor_service.h"
-#include "maze.grpc.pb.h"
-#include "store/model_registry.h"
+#include "test_helpers.h"
 
 #include <grpcpp/grpcpp.h>
 
@@ -14,183 +13,195 @@
 namespace {
 
 int Fail(const std::string& message) {
-    std::cerr << message << std::endl;
+    std::cerr << "FAIL: " << message << std::endl;
     return 1;
-}
-
-maze::ModelArtifactManifest BuildManifest(
-    const std::filesystem::path& path,
-    const std::string& checksum) {
-    maze::ModelArtifactManifest manifest;
-    manifest.set_schema_version(1);
-    manifest.set_contract_version("0.6.0");
-    manifest.set_model_version(0);
-    manifest.set_artifact_uri("file://" + path.string());
-    manifest.set_model_file(path.filename().string());
-    manifest.set_size_bytes(
-        static_cast<int64_t>(std::filesystem::file_size(path)));
-    manifest.set_sha256(checksum);
-    manifest.add_input_shape(1);
-    manifest.add_input_shape(13);
-    manifest.add_action_shape(1);
-    manifest.add_action_shape(9);
-    manifest.add_value_shape(1);
-    manifest.add_value_shape(1);
-    manifest.set_seed(0);
-    manifest.set_ready(true);
-    manifest.set_published_ts_ms(1);
-    return manifest;
 }
 
 }  // namespace
 
 int main() {
     namespace fs = std::filesystem;
+    using namespace test_helpers;
     const fs::path root = fs::temp_directory_path() /
                           ("model-distributor-rpc-" +
                            std::to_string(::getpid()));
     fs::create_directories(root / "serving");
-    const fs::path model_path =
-        root / "serving/model_v000000.onnx";
-    const std::string expected_payload =
-        "0123456789abcdefghijklmnopqrstuvwxyz";
+    const fs::path model_path = root / "serving/model_v000000.onnx";
+    const std::string payload = "0123456789abcdefghijklmnopqrstuvwxyz";
     {
         std::ofstream output(model_path, std::ios::binary);
-        output << expected_payload;
+        output << payload;
     }
-
     std::string checksum;
     std::string error;
-    if (!ComputeSha256(model_path, &checksum, &error)) {
-        return Fail(error);
-    }
-    ModelDistributorConfig config;
-    config.artifact_root = root.string();
-    config.contract_version = "0.6.0";
-    config.chunk_bytes = 5;
+    if (!ComputeSha256(model_path, &checksum, &error)) return Fail(error);
+    ModelDistributorConfig config = Config(root);
     ModelDistributorServiceImpl service(config);
 
-    int selected_port = 0;
+    int port = 0;
     grpc::ServerBuilder builder;
-    builder.AddListeningPort(
-        "127.0.0.1:0",
-        grpc::InsecureServerCredentials(),
-        &selected_port);
+    builder.AddListeningPort("127.0.0.1:0",
+                             grpc::InsecureServerCredentials(), &port);
     builder.RegisterService(&service);
     std::unique_ptr<grpc::Server> server = builder.BuildAndStart();
-    if (!server || selected_port <= 0) {
+    if (!server || port <= 0) {
         fs::remove_all(root);
         return Fail("failed to start test ModelDistributor");
     }
     auto channel = grpc::CreateChannel(
-        "127.0.0.1:" + std::to_string(selected_port),
+        "127.0.0.1:" + std::to_string(port),
         grpc::InsecureChannelCredentials());
-    auto stub = maze::ModelDistributorService::NewStub(channel);
+    auto stub = rl::training::v1::ModelDistributorService::NewStub(channel);
+    auto manifest = Manifest(model_path, checksum);
 
-    maze::RegisterModelReq register_request;
-    *register_request.mutable_manifest() =
-        BuildManifest(model_path, checksum);
-    maze::RegisterModelRsp register_response;
+    rl::training::v1::RegisterModelReq register_request;
+    *register_request.mutable_manifest() = manifest;
+    rl::training::v1::RegisterModelRsp register_response;
     grpc::ClientContext register_context;
-    grpc::Status register_status = stub->RegisterModel(
-        &register_context, register_request, &register_response);
-    if (!register_status.ok() ||
+    if (!stub->RegisterModel(&register_context, register_request,
+                             &register_response)
+             .ok() ||
         register_response.result() !=
-            maze::MODEL_REGISTER_RESULT_REGISTERED) {
+            rl::training::v1::MODEL_REGISTER_RESULT_REGISTERED ||
+        register_response.distributor().instance_id().empty()) {
         server->Shutdown();
         fs::remove_all(root);
         return Fail("RegisterModel RPC failed");
     }
 
-    maze::RegisterModelReq invalid_request = register_request;
-    invalid_request.mutable_manifest()->set_sha256(
-        std::string(64, '0'));
-    maze::RegisterModelRsp invalid_response;
-    grpc::ClientContext invalid_context;
-    grpc::Status invalid_status = stub->RegisterModel(
-        &invalid_context, invalid_request, &invalid_response);
-    if (!invalid_status.ok() ||
-        invalid_response.result() !=
-            maze::MODEL_REGISTER_RESULT_REJECTED_INVALID) {
+    rl::training::v1::GetModelManifestReq latest_request;
+    latest_request.mutable_requested_model()->set_model_lineage_id(
+        manifest.identity().model_lineage_id());
+    Service(latest_request.mutable_requester(), "aiserver", "aiserver-0");
+    latest_request.set_latest_in_lineage(true);
+    rl::training::v1::GetModelManifestRsp latest_response;
+    grpc::ClientContext latest_context;
+    if (!stub->GetModelManifest(&latest_context, latest_request,
+                                &latest_response)
+             .ok() ||
+        latest_response.ret_code() != 0 ||
+        latest_response.manifest().identity().SerializeAsString() !=
+            manifest.identity().SerializeAsString()) {
         server->Shutdown();
         fs::remove_all(root);
-        return Fail("checksum mismatch was not rejected");
+        return Fail("latest lineage lookup failed");
     }
 
-    maze::DownloadModelReq download_request;
-    download_request.set_model_version(0);
-    download_request.set_aiserver_id("aiserver-0");
+    rl::training::v1::GetModelManifestReq version_request;
+    version_request.mutable_requested_model()->set_model_lineage_id(
+        manifest.identity().model_lineage_id());
+    version_request.mutable_requested_model()->set_model_version(
+        manifest.identity().model_version());
+    Service(version_request.mutable_requester(), "aiserver", "aiserver-0");
+    rl::training::v1::GetModelManifestRsp version_response;
+    grpc::ClientContext version_context;
+    if (!stub->GetModelManifest(&version_context, version_request,
+                                &version_response)
+             .ok() ||
+        version_response.ret_code() != 0 ||
+        version_response.manifest().identity().SerializeAsString() !=
+            manifest.identity().SerializeAsString()) {
+        server->Shutdown();
+        fs::remove_all(root);
+        return Fail("lineage/version selector lookup failed");
+    }
+
+    rl::training::v1::DownloadModelReq download_request;
+    *download_request.mutable_requested_model() = manifest.identity();
+    Service(download_request.mutable_requester(), "aiserver", "aiserver-0");
     grpc::ClientContext download_context;
-    auto reader = stub->DownloadModel(
-        &download_context, download_request);
-    maze::ModelChunk chunk;
+    auto reader = stub->DownloadModel(&download_context, download_request);
+    rl::training::v1::ModelChunk chunk;
     int64_t expected_offset = 0;
     std::string reconstructed;
     while (reader->Read(&chunk)) {
         if (chunk.offset() != expected_offset ||
-            chunk.model_version() != 0) {
+            chunk.model().SerializeAsString() !=
+                manifest.identity().SerializeAsString()) {
             server->Shutdown();
             fs::remove_all(root);
-            return Fail("DownloadModel chunk identity or offset is invalid");
+            return Fail("DownloadModel chunk identity or offset invalid");
         }
         reconstructed.append(chunk.data());
         expected_offset += static_cast<int64_t>(chunk.data().size());
     }
-    if (!reader->Finish().ok() ||
-        reconstructed != expected_payload) {
+    if (!reader->Finish().ok() || reconstructed != payload) {
         server->Shutdown();
         fs::remove_all(root);
         return Fail("DownloadModel payload reconstruction failed");
     }
 
-    maze::GetModelManifestReq unknown_request;
-    unknown_request.set_model_version(99);
-    maze::GetModelManifestRsp unknown_response;
-    grpc::ClientContext unknown_context;
-    grpc::Status unknown_status = stub->GetModelManifest(
-        &unknown_context, unknown_request, &unknown_response);
-    if (!unknown_status.ok() || unknown_response.ret_code() == 0) {
+    rl::training::v1::GetModelManifestReq wrong_request;
+    *wrong_request.mutable_requested_model() = manifest.identity();
+    wrong_request.mutable_requested_model()
+        ->mutable_artifact_digest()
+        ->set_hex(std::string(64, 'f'));
+    Service(wrong_request.mutable_requester(), "aiserver", "aiserver-0");
+    rl::training::v1::GetModelManifestRsp wrong_response;
+    grpc::ClientContext wrong_context;
+    if (!stub->GetModelManifest(&wrong_context, wrong_request, &wrong_response)
+             .ok() ||
+        wrong_response.ret_code() == 0) {
         server->Shutdown();
         fs::remove_all(root);
-        return Fail("unknown model version was returned");
+        return Fail("digest-mismatched identity was returned");
     }
 
-    maze::GetModelManifestReq latest_request;
-    latest_request.set_aiserver_id("aiserver-0");
-    latest_request.set_latest(true);
-    maze::GetModelManifestRsp latest_response;
-    grpc::ClientContext latest_context;
-    if (!stub->GetModelManifest(
-             &latest_context, latest_request, &latest_response).ok() ||
-        latest_response.ret_code() != 0 ||
-        latest_response.manifest().model_version() != 0) {
+    rl::training::v1::GetModelManifestReq incomplete_request;
+    incomplete_request.mutable_requested_model()->set_model_lineage_id(
+        manifest.identity().model_lineage_id());
+    incomplete_request.mutable_requested_model()->set_model_version(
+        manifest.identity().model_version());
+    *incomplete_request.mutable_requested_model()->mutable_artifact_digest() =
+        manifest.identity().artifact_digest();
+    Service(incomplete_request.mutable_requester(), "aiserver", "aiserver-0");
+    rl::training::v1::GetModelManifestRsp incomplete_response;
+    grpc::ClientContext incomplete_context;
+    if (!stub->GetModelManifest(&incomplete_context, incomplete_request,
+                                &incomplete_response)
+             .ok() ||
+        incomplete_response.ret_code() == 0) {
         server->Shutdown();
         fs::remove_all(root);
-        return Fail("latest model lookup failed");
+        return Fail("incomplete digest selector was accepted");
     }
 
-    maze::AckModelReq ack_request;
-    ack_request.set_aiserver_id("aiserver-0");
-    ack_request.set_model_version(0);
-    ack_request.set_sha256(checksum);
-    ack_request.set_load_status(maze::MODEL_LOAD_STATUS_LOADED);
-    maze::AckModelRsp first_ack;
-    maze::AckModelRsp second_ack;
+    rl::training::v1::AckModelReq ack_request;
+    Service(ack_request.mutable_aiserver(), "aiserver", "aiserver-0");
+    *ack_request.mutable_model() = manifest.identity();
+    ack_request.set_load_instance_id("load-0");
+    ack_request.set_load_status(rl::training::v1::MODEL_LOAD_STATUS_LOADED);
+    rl::training::v1::AckModelRsp first_ack;
+    rl::training::v1::AckModelRsp second_ack;
     grpc::ClientContext first_ack_context;
     grpc::ClientContext second_ack_context;
-    if (!stub->AckModel(
-             &first_ack_context, ack_request, &first_ack).ok() ||
-        !stub->AckModel(
-             &second_ack_context, ack_request, &second_ack).ok() ||
-        first_ack.result() != maze::MODEL_ACK_RESULT_APPLIED ||
+    if (!stub->AckModel(&first_ack_context, ack_request, &first_ack).ok() ||
+        !stub->AckModel(&second_ack_context, ack_request, &second_ack).ok() ||
+        first_ack.result() != rl::training::v1::MODEL_ACK_RESULT_APPLIED ||
         second_ack.result() !=
-            maze::MODEL_ACK_RESULT_ALREADY_APPLIED) {
+            rl::training::v1::MODEL_ACK_RESULT_ALREADY_APPLIED) {
         server->Shutdown();
         fs::remove_all(root);
         return Fail("AckModel RPC was not idempotent");
     }
 
+    rl::training::v1::ModelDistributorStatusReq status_request;
+    rl::training::v1::ModelDistributorStatusRsp status_response;
+    grpc::ClientContext status_context;
+    if (!stub->GetModelDistributorStatus(&status_context, status_request,
+                                         &status_response)
+             .ok() ||
+        !status_response.ready() ||
+        status_response.latest_model().SerializeAsString() !=
+            manifest.identity().SerializeAsString() ||
+        status_response.loaded_ack_count() != 1) {
+        server->Shutdown();
+        fs::remove_all(root);
+        return Fail("status RPC did not preserve model/ACK identity");
+    }
+
     server->Shutdown();
     fs::remove_all(root);
+    std::cout << "model_distributor_rpc_contract: PASS" << std::endl;
     return 0;
 }

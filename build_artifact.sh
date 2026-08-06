@@ -13,7 +13,8 @@ platform="$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}')"
 platform_dir="${platform//\//-}"
 contract_dir="${contract_root}/${RL_CONTRACTS_VERSION}/${platform_dir}"
 if ! test -f "${contract_dir}/manifest.json" ||
-   ! test -f "${contract_dir}/cpp/maze.pb.cc"; then
+   ! test -f "${contract_dir}/cpp/common.pb.cc" ||
+   ! test -f "${contract_dir}/cpp/training.pb.cc"; then
     echo "rl-contracts artifact is missing; run: (cd ../rl-contracts && bash build_artifact.sh)" >&2
     exit 1
 fi
@@ -73,8 +74,10 @@ if any(manifest.get(key) != value for key, value in expected.items()):
     raise SystemExit(1)
 expected_contract = {
     "version": contract["version"],
-    "source_id": contract["source_id"],
-    "source_sha256": contract["source_sha256"],
+    "source_digest": contract["source_digest"],
+    "artifact_digest": contract["artifact_digest"],
+    "platform": contract["platform"],
+    "generator_identity": contract["generator_identity"],
 }
 if manifest.get("contract") != expected_contract:
     raise SystemExit(1)
@@ -151,8 +154,10 @@ manifest = {
     "abi": "cxx17-grpc-debian13",
     "contract": {
         "version": contract["version"],
-        "source_id": contract["source_id"],
-        "source_sha256": contract["source_sha256"],
+        "source_digest": contract["source_digest"],
+        "artifact_digest": contract["artifact_digest"],
+        "platform": contract["platform"],
+        "generator_identity": contract["generator_identity"],
     },
     "files": files,
 }

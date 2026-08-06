@@ -2,7 +2,7 @@
 
 English | [简体中文](README.md)
 
-C++ model registration and download artifact repository, currently at version `0.5.0`. The generated ModelDistributor binary is used by the Learner image.
+C++ model registration, download, and AIServer load-ACK service at version `0.8.0`. It consumes only `rl.training.v1` model identities and has no Maze task-protocol dependency.
 
 ## Build
 
@@ -15,10 +15,14 @@ bash build_artifact.sh
 Output directory:
 
 ```text
-../.workspace/artifacts/rl-model-distributor/0.5.0/<platform>/
+../.workspace/artifacts/rl-model-distributor/0.8.0/<platform>/
 ```
 
-Copy the artifact for the selected platform into `rl-learner/model-distributor/` before building the Learner image.
+Runtime configuration must contain the complete `rl-contracts 0.8.0` artifact identity. Missing, old, or digest-mismatched identities fail closed.
+
+```bash
+./maze_model_distributor configs/model_distributor_config.yaml
+```
 
 ## License
 
