@@ -9,9 +9,9 @@
 namespace test_helpers {
 
 constexpr char kSourceDigest[] =
-    "157fba14177a0727abf663c442003e2a5f5c1e297f4af97ea22b45d74cdb32b5";
+    "861575536f18342fd427661c8f21b7b98994913e1e1c998f87fce5ee1490d438";
 constexpr char kContractArtifactDigest[] =
-    "71a0f13363d62b5d076c02b00e5b4b269a3e91253b190432f2e83c43cdcf7d3a";
+    "b8e8cdabf05b15b830b27edd1555904269202042756ecf0ed8158184e57ce8f6";
 constexpr char kGeneratorIdentity[] =
     "0eb73fc2cb675bdb34bf3db9c99dae62a82f93a5e3a72db84dcf3936464729c8";
 
@@ -23,7 +23,7 @@ inline void Digest(rl::common::v1::ContentDigest* digest,
 
 inline void Contract(rl::common::v1::ContractIdentity* contract) {
     contract->set_package_name("rl-contracts");
-    contract->set_package_version("0.8.0");
+    contract->set_package_version("0.9.1");
     Digest(contract->mutable_source_digest(), kSourceDigest);
     Digest(contract->mutable_artifact_digest(), kContractArtifactDigest);
     contract->set_platform("linux/arm64");
@@ -52,7 +52,7 @@ inline ModelDistributorConfig Config(const std::filesystem::path& root) {
     config.chunk_bytes = 5;
     config.retention_versions = 2;
     config.contract.package_name = "rl-contracts";
-    config.contract.package_version = "0.8.0";
+    config.contract.package_version = "0.9.1";
     config.contract.source_digest = kSourceDigest;
     config.contract.artifact_digest = kContractArtifactDigest;
     config.contract.platform = "linux/arm64";
@@ -94,7 +94,7 @@ inline rl::training::v1::ModelArtifactManifest Manifest(
     semantics->set_training_contract_id("maze.training.v3");
     *semantics->mutable_observation_schema() = manifest.observation_schema();
     *semantics->mutable_action_schema() = manifest.action_schema();
-    Schema(semantics->mutable_reward_schema(), "maze.reward.v3", '4');
+    Schema(semantics->mutable_reward_schema(), "maze.reward.v4", '4');
     semantics->set_policy_distribution_schema_id("categorical.logits.v1");
     semantics->set_model_architecture_id(manifest.model_architecture_id());
     Digest(semantics->mutable_semantics_digest(), std::string(64, '5'));

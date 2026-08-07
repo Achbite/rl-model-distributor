@@ -2,9 +2,9 @@
   "manifest_schema_version": 1,
   "contract": {
     "package_name": "rl-contracts",
-    "package_version": "0.8.0",
-    "source_digest": "157fba14177a0727abf663c442003e2a5f5c1e297f4af97ea22b45d74cdb32b5",
-    "artifact_digest": "71a0f13363d62b5d076c02b00e5b4b269a3e91253b190432f2e83c43cdcf7d3a",
+    "package_version": "0.9.1",
+    "source_digest": "861575536f18342fd427661c8f21b7b98994913e1e1c998f87fce5ee1490d438",
+    "artifact_digest": "b8e8cdabf05b15b830b27edd1555904269202042756ecf0ed8158184e57ce8f6",
     "platform": "linux/arm64",
     "generator_identity": "0eb73fc2cb675bdb34bf3db9c99dae62a82f93a5e3a72db84dcf3936464729c8"
   },
@@ -49,7 +49,7 @@
       "canonical_digest": "5555555555555555555555555555555555555555555555555555555555555555"
     },
     "reward_schema": {
-      "schema_id": "maze.reward.v3",
+      "schema_id": "maze.reward.v4",
       "schema_version": 1,
       "canonical_digest": "6666666666666666666666666666666666666666666666666666666666666666"
     },

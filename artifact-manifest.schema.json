@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rl-training.local/schemas/model-artifact-manifest-0.8.0.json",
-  "title": "RL model artifact manifest 0.8",
+  "$id": "https://rl-training.local/schemas/model-artifact-manifest-0.9.1.json",
+  "title": "RL model artifact manifest 0.9.1",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -58,7 +58,7 @@
       "required": ["package_name", "package_version", "source_digest", "artifact_digest", "platform", "generator_identity"],
       "properties": {
         "package_name": {"const": "rl-contracts"},
-        "package_version": {"const": "0.8.0"},
+        "package_version": {"const": "0.9.1"},
         "source_digest": {"$ref": "#/$defs/digest"},
         "artifact_digest": {"$ref": "#/$defs/digest"},
         "platform": {"type": "string", "minLength": 1},

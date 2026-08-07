@@ -154,7 +154,7 @@ int main() {
         status.loaded_ack_count() != 1 ||
         status.duplicate_register_count() != 1 ||
         status.rejected_register_count() != 4 ||
-        status.contract().package_version() != "0.8.0" ||
+        status.contract().package_version() != "0.9.1" ||
         status.distributor().component() != "model-distributor") {
         return Fail("status identity or counters do not match operations");
     }

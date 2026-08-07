@@ -23,7 +23,7 @@ Git savepoint. The build entrypoint refuses to create a new artifact from a
 dirty worktree. An existing artifact can only be reused when both source
 identity and every file checksum still match.
 
-Runtime configuration must contain the complete `rl-contracts 0.8.0` artifact identity. Missing, old, or digest-mismatched identities fail closed.
+Runtime configuration must contain the complete `rl-contracts 0.9.1` artifact identity. Missing, old, or digest-mismatched identities fail closed.
 
 ```bash
 ./maze_model_distributor configs/model_distributor_config.yaml

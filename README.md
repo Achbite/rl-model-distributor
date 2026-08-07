@@ -22,7 +22,7 @@ bash build_artifact.sh
 入口拒绝从 dirty worktree 创建新版本。已存在的同版本制品只允许在源码身份和文件
 checksum 全部一致时复用。
 
-运行时必须使用配置文件中的完整 `rl-contracts 0.8.0` 制品身份；缺失、旧版本或 digest 不匹配会拒绝启动或注册。
+运行时必须使用配置文件中的完整 `rl-contracts 0.9.1` 制品身份；缺失、旧版本或 digest 不匹配会拒绝启动或注册。
 
 ```bash
 ./maze_model_distributor configs/model_distributor_config.yaml
