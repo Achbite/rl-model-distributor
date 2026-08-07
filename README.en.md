@@ -2,7 +2,7 @@
 
 English | [简体中文](README.md)
 
-C++ model registration, download, and AIServer load-ACK service at version `0.10.0`. It consumes only `rl.training.v1` model identities and has no Maze task-protocol dependency.
+C++ model registration, download, and AIServer load-ACK service at version `0.10.1`. It consumes only `rl.training.v1` model identities and has no Maze task-protocol dependency.
 
 ## Build
 
@@ -15,7 +15,7 @@ bash build_artifact.sh
 Output directory:
 
 ```text
-../.workspace/artifacts/rl-model-distributor/0.10.0/<platform>/
+../.workspace/artifacts/rl-model-distributor/0.10.1/<platform>/
 ```
 
 Creating a version for the first time requires a reviewed and committed clean

@@ -368,15 +368,6 @@ rl::training::v1::ModelRegisterResult ModelRegistry::Register(
         const ModelKey removed = lineage_keys.front();
         lineage_keys.erase(lineage_keys.begin());
         models_.erase(removed);
-        for (auto ack = acknowledgements_.begin();
-             ack != acknowledgements_.end();) {
-            if (ack->second.model().model_lineage_id() == removed.lineage_id &&
-                ack->second.model().model_version() == removed.version) {
-                ack = acknowledgements_.erase(ack);
-            } else {
-                ++ack;
-            }
-        }
     }
     *registered = record;
     *message = "model registered";
@@ -452,10 +443,14 @@ bool ModelRegistry::GetLatest(const std::string& lineage_id,
 
 std::string ModelRegistry::AckKey(
     const rl::training::v1::AckModelReq& request) {
-    return request.aiserver().component() + "\x1f" +
-           request.aiserver().instance_id() + "\x1f" +
-           std::to_string(request.aiserver().lifecycle_epoch()) + "\x1f" +
+    return ServiceKey(request.aiserver()) + "\x1f" +
            request.load_instance_id();
+}
+
+std::string ModelRegistry::ServiceKey(
+    const rl::common::v1::ServiceInstanceIdentity& service) {
+    return service.component() + "\x1f" + service.instance_id() + "\x1f" +
+           std::to_string(service.lifecycle_epoch());
 }
 
 bool ModelRegistry::AckEquivalent(
@@ -477,16 +472,6 @@ rl::training::v1::ModelAckResult ModelRegistry::Ack(
         return rl::training::v1::MODEL_ACK_RESULT_REJECTED;
     }
     std::lock_guard<std::mutex> lock(mutex_);
-    const ModelKey model_key{request.model().model_lineage_id(),
-                             request.model().model_version()};
-    const auto model = models_.find(model_key);
-    if (model == models_.end() ||
-        model->second.manifest.identity().SerializeAsString() !=
-            request.model().SerializeAsString()) {
-        last_error_ = "model identity not found";
-        *message = last_error_;
-        return rl::training::v1::MODEL_ACK_RESULT_NOT_FOUND;
-    }
     const std::string key = AckKey(request);
     const auto existing = acknowledgements_.find(key);
     if (existing != acknowledgements_.end()) {
@@ -498,7 +483,26 @@ rl::training::v1::ModelAckResult ModelRegistry::Ack(
         *message = last_error_;
         return rl::training::v1::MODEL_ACK_RESULT_REJECTED;
     }
+    const ModelKey model_key{request.model().model_lineage_id(),
+                             request.model().model_version()};
+    const auto model = models_.find(model_key);
+    const auto completed = completed_downloads_.find(
+        ServiceKey(request.aiserver()));
+    const bool registered_identity =
+        model != models_.end() &&
+        model->second.manifest.identity().SerializeAsString() ==
+            request.model().SerializeAsString();
+    const bool completed_download_identity =
+        completed != completed_downloads_.end() &&
+        completed->second.SerializeAsString() ==
+            request.model().SerializeAsString();
+    if (!registered_identity && !completed_download_identity) {
+        last_error_ = "model identity not found";
+        *message = last_error_;
+        return rl::training::v1::MODEL_ACK_RESULT_NOT_FOUND;
+    }
     acknowledgements_.emplace(key, request);
+    if (completed_download_identity) completed_downloads_.erase(completed);
     latest_ack_aiserver_ = request.aiserver();
     latest_ack_model_ = request.model();
     latest_ack_status_ = request.load_status();
@@ -518,10 +522,14 @@ void ModelRegistry::RecordDownloadAttempt() {
     ++download_request_count_;
 }
 
-void ModelRegistry::RecordDownloadSuccess(int64_t bytes) {
+void ModelRegistry::RecordDownloadSuccess(
+    const rl::common::v1::ServiceInstanceIdentity& requester,
+    const rl::training::v1::ModelIdentity& model,
+    int64_t bytes) {
     std::lock_guard<std::mutex> lock(mutex_);
     ++download_success_count_;
     bytes_served_ += bytes;
+    completed_downloads_[ServiceKey(requester)] = model;
 }
 
 void ModelRegistry::RecordDownloadFailure(const std::string& error) {

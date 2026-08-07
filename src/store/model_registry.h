@@ -37,7 +37,10 @@ public:
         std::string* message);
 
     void RecordDownloadAttempt();
-    void RecordDownloadSuccess(int64_t bytes);
+    void RecordDownloadSuccess(
+        const rl::common::v1::ServiceInstanceIdentity& requester,
+        const rl::training::v1::ModelIdentity& model,
+        int64_t bytes);
     void RecordDownloadFailure(const std::string& error);
     void GetStatus(rl::training::v1::ModelDistributorStatusRsp* response) const;
     void FillDistributorIdentity(
@@ -71,6 +74,8 @@ private:
         std::filesystem::path* model_path,
         std::string* error) const;
     static std::string AckKey(const rl::training::v1::AckModelReq& request);
+    static std::string ServiceKey(
+        const rl::common::v1::ServiceInstanceIdentity& service);
     static bool AckEquivalent(const rl::training::v1::AckModelReq& left,
                               const rl::training::v1::AckModelReq& right);
 
@@ -80,6 +85,8 @@ private:
     mutable std::mutex mutex_;
     std::map<ModelKey, RegisteredModel> models_;
     std::map<std::string, uint64_t> latest_version_seen_;
+    std::map<std::string, rl::training::v1::ModelIdentity>
+        completed_downloads_;
     std::map<std::string, rl::training::v1::AckModelReq> acknowledgements_;
     bool has_latest_model_ = false;
     rl::training::v1::ModelIdentity latest_model_;

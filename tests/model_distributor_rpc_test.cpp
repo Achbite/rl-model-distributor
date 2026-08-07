@@ -53,6 +53,7 @@ int main() {
         grpc::InsecureChannelCredentials());
     auto stub = rl::training::v1::ModelDistributorService::NewStub(channel);
     auto manifest = Manifest(model_path, checksum);
+    auto latest_registered = manifest;
 
     rl::training::v1::RegisterModelReq register_request;
     *register_request.mutable_manifest() = manifest;
@@ -166,6 +167,35 @@ int main() {
         return Fail("incomplete digest selector was accepted");
     }
 
+    for (uint64_t version = 1; version <= 2; ++version) {
+        const fs::path next_path = root / "serving" /
+                                   ("model_v00000" +
+                                    std::to_string(version) + ".onnx");
+        {
+            std::ofstream output(next_path, std::ios::binary);
+            output << "model-version-" << version;
+        }
+        std::string next_checksum;
+        if (!ComputeSha256(next_path, &next_checksum, &error)) {
+            server->Shutdown();
+            fs::remove_all(root);
+            return Fail(error);
+        }
+        latest_registered = Manifest(next_path, next_checksum, version);
+        rl::training::v1::RegisterModelReq next_request;
+        *next_request.mutable_manifest() = latest_registered;
+        rl::training::v1::RegisterModelRsp next_response;
+        grpc::ClientContext next_context;
+        if (!stub->RegisterModel(&next_context, next_request, &next_response)
+                 .ok() ||
+            next_response.result() !=
+                rl::training::v1::MODEL_REGISTER_RESULT_REGISTERED) {
+            server->Shutdown();
+            fs::remove_all(root);
+            return Fail("newer model registration failed");
+        }
+    }
+
     rl::training::v1::AckModelReq ack_request;
     Service(ack_request.mutable_aiserver(), "aiserver", "aiserver-0");
     *ack_request.mutable_model() = manifest.identity();
@@ -193,7 +223,7 @@ int main() {
              .ok() ||
         !status_response.ready() ||
         status_response.latest_model().SerializeAsString() !=
-            manifest.identity().SerializeAsString() ||
+            latest_registered.identity().SerializeAsString() ||
         status_response.loaded_ack_count() != 1) {
         server->Shutdown();
         fs::remove_all(root);

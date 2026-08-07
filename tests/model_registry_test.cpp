@@ -115,6 +115,10 @@ int main() {
         return Fail("load idempotency conflict was accepted");
     }
 
+    rl::common::v1::ServiceInstanceIdentity requester;
+    Service(&requester, "aiserver", "aiserver-0");
+    registry.RecordDownloadSuccess(requester, manifest.identity(), 19);
+
     for (uint64_t version = 1; version <= 2; ++version) {
         const fs::path path = root / "serving" /
                               ("model_v00000" + std::to_string(version) +
@@ -147,11 +151,30 @@ int main() {
         return Fail("evicted model version selector unexpectedly succeeded");
     }
 
+    rl::training::v1::AckModelReq delayed_ack;
+    *delayed_ack.mutable_aiserver() = requester;
+    *delayed_ack.mutable_model() = manifest.identity();
+    delayed_ack.set_load_instance_id("load-after-serving-eviction");
+    delayed_ack.set_load_status(
+        rl::training::v1::MODEL_LOAD_STATUS_LOADED);
+    if (registry.Ack(delayed_ack, &message) !=
+        rl::training::v1::MODEL_ACK_RESULT_APPLIED) {
+        return Fail("completed download ACK was lost after serving eviction");
+    }
+    if (registry.Ack(delayed_ack, &message) !=
+        rl::training::v1::MODEL_ACK_RESULT_ALREADY_APPLIED) {
+        return Fail("evicted model ACK retry was not idempotent");
+    }
+    if (registry.Ack(ack, &message) !=
+        rl::training::v1::MODEL_ACK_RESULT_ALREADY_APPLIED) {
+        return Fail("existing ACK was lost when serving model was evicted");
+    }
+
     rl::training::v1::ModelDistributorStatusRsp status;
     registry.GetStatus(&status);
     if (!status.ready() || status.registered_model_count() != 2 ||
         status.latest_model().model_version() != 2 ||
-        status.loaded_ack_count() != 1 ||
+        status.loaded_ack_count() != 2 ||
         status.duplicate_register_count() != 1 ||
         status.rejected_register_count() != 4 ||
         status.contract().package_version() != "0.10.0" ||

@@ -124,7 +124,8 @@ grpc::Status ModelDistributorServiceImpl::DownloadModel(
         return grpc::Status(grpc::StatusCode::DATA_LOSS,
                             "model download read failed");
     }
-    registry_.RecordDownloadSuccess(offset);
+    registry_.RecordDownloadSuccess(
+        request->requester(), record.manifest.identity(), offset);
     return grpc::Status::OK;
 }
 
