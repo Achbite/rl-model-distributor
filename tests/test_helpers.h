@@ -9,9 +9,9 @@
 namespace test_helpers {
 
 constexpr char kSourceDigest[] =
-    "861575536f18342fd427661c8f21b7b98994913e1e1c998f87fce5ee1490d438";
+    "fc1bf2e3dfd804431f2528d8da53227e55ca9b58b32fc95327558d91cebb3b97";
 constexpr char kContractArtifactDigest[] =
-    "b8e8cdabf05b15b830b27edd1555904269202042756ecf0ed8158184e57ce8f6";
+    "d90083d97e377230f50c820d040a5d83ce7435dc88c4f948c222c86ac4a429ae";
 constexpr char kGeneratorIdentity[] =
     "0eb73fc2cb675bdb34bf3db9c99dae62a82f93a5e3a72db84dcf3936464729c8";
 
@@ -23,7 +23,7 @@ inline void Digest(rl::common::v1::ContentDigest* digest,
 
 inline void Contract(rl::common::v1::ContractIdentity* contract) {
     contract->set_package_name("rl-contracts");
-    contract->set_package_version("0.9.1");
+    contract->set_package_version("0.10.0");
     Digest(contract->mutable_source_digest(), kSourceDigest);
     Digest(contract->mutable_artifact_digest(), kContractArtifactDigest);
     contract->set_platform("linux/arm64");
@@ -52,7 +52,7 @@ inline ModelDistributorConfig Config(const std::filesystem::path& root) {
     config.chunk_bytes = 5;
     config.retention_versions = 2;
     config.contract.package_name = "rl-contracts";
-    config.contract.package_version = "0.9.1";
+    config.contract.package_version = "0.10.0";
     config.contract.source_digest = kSourceDigest;
     config.contract.artifact_digest = kContractArtifactDigest;
     config.contract.platform = "linux/arm64";

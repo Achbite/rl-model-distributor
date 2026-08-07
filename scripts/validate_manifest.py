@@ -67,8 +67,8 @@ def main() -> int:
     if data["manifest_schema_version"] != 1:
         raise ValueError("manifest_schema_version must be 1")
     contract = data["contract"]
-    if not isinstance(contract, dict) or contract.get("package_name") != "rl-contracts" or contract.get("package_version") != "0.9.1":
-        raise ValueError("contract must identify rl-contracts 0.9.1")
+    if not isinstance(contract, dict) or contract.get("package_name") != "rl-contracts" or contract.get("package_version") != "0.10.0":
+        raise ValueError("contract must identify rl-contracts 0.10.0")
     require_digest(contract.get("source_digest"), "contract.source_digest")
     require_digest(contract.get("artifact_digest"), "contract.artifact_digest")
     require_digest(contract.get("generator_identity"), "contract.generator_identity")
