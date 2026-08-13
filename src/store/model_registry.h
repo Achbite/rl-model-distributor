@@ -6,12 +6,28 @@
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
+
+struct ModelArtifactHandle {
+    explicit ModelArtifactHandle(int descriptor_value,
+                                 int64_t size_value,
+                                 std::filesystem::path path_value);
+    ~ModelArtifactHandle();
+
+    ModelArtifactHandle(const ModelArtifactHandle&) = delete;
+    ModelArtifactHandle& operator=(const ModelArtifactHandle&) = delete;
+
+    int descriptor = -1;
+    int64_t size = 0;
+    std::filesystem::path path;
+};
 
 struct RegisteredModel {
     rl::training::v1::ModelArtifactManifest manifest;
     std::filesystem::path path;
+    std::shared_ptr<const ModelArtifactHandle> artifact;
 };
 
 class ModelRegistry {
@@ -32,6 +48,17 @@ public:
     bool GetLatest(const std::string& lineage_id,
                    RegisteredModel* model,
                    std::string* message);
+    bool GetManifestSnapshot(
+        const rl::training::v1::ModelIdentity& selector,
+        bool latest_in_lineage,
+        RegisteredModel* model,
+        uint64_t* floor,
+        uint64_t* latest,
+        std::string* message);
+    bool GetAvailableRange(const std::string& lineage_id,
+                           uint64_t* floor,
+                           uint64_t* latest,
+                           std::string* message) const;
     rl::training::v1::ModelAckResult Ack(
         const rl::training::v1::AckModelReq& request,
         std::string* message);
@@ -76,8 +103,16 @@ private:
     static std::string AckKey(const rl::training::v1::AckModelReq& request);
     static std::string ServiceKey(
         const rl::common::v1::ServiceInstanceIdentity& service);
+    static std::string DownloadKey(
+        const rl::common::v1::ServiceInstanceIdentity& service,
+        const rl::training::v1::ModelIdentity& model);
     static bool AckEquivalent(const rl::training::v1::AckModelReq& left,
                               const rl::training::v1::AckModelReq& right);
+    bool AvailableRangeLocked(const std::string& lineage_id,
+                              uint64_t* floor,
+                              uint64_t* latest,
+                              std::string* message) const;
+    void PruneSettlementFactsLocked(const std::string& lineage_id);
 
     ModelDistributorConfig config_;
     std::filesystem::path artifact_root_;
@@ -88,6 +123,7 @@ private:
     std::map<std::string, rl::training::v1::ModelIdentity>
         completed_downloads_;
     std::map<std::string, rl::training::v1::AckModelReq> acknowledgements_;
+    std::map<std::string, ModelKey> acknowledgement_models_;
     bool has_latest_model_ = false;
     rl::training::v1::ModelIdentity latest_model_;
     int64_t register_attempt_count_ = 0;

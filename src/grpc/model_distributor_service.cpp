@@ -1,6 +1,8 @@
 #include "grpc/model_distributor_service.h"
 
-#include <fstream>
+#include <algorithm>
+#include <cerrno>
+#include <unistd.h>
 #include <vector>
 
 ModelDistributorServiceImpl::ModelDistributorServiceImpl(
@@ -49,26 +51,11 @@ grpc::Status ModelDistributorServiceImpl::GetModelManifest(
     }
     RegisteredModel record;
     std::string message;
-    const auto& requested = request->requested_model();
-    const bool has_artifact_digest =
-        requested.has_artifact_digest() &&
-        !requested.artifact_digest().hex().empty();
-    const bool has_manifest_digest =
-        requested.has_manifest_digest() &&
-        !requested.manifest_digest().hex().empty();
-    bool found = false;
-    if (request->latest_in_lineage()) {
-        found = registry_.GetLatest(
-            requested.model_lineage_id(), &record, &message);
-    } else if (!has_artifact_digest && !has_manifest_digest) {
-        found = registry_.GetByVersion(
-            requested.model_lineage_id(), requested.model_version(),
-            &record, &message);
-    } else if (has_artifact_digest && has_manifest_digest) {
-        found = registry_.Get(requested, &record, &message);
-    } else {
-        message = "requested model selector has incomplete digest identity";
-    }
+    uint64_t floor = 0;
+    uint64_t latest = 0;
+    const bool found = registry_.GetManifestSnapshot(
+        request->requested_model(), request->latest_in_lineage(), &record,
+        &floor, &latest, &message);
     if (!found) {
         response->set_ret_code(-1);
         response->set_message(message);
@@ -77,6 +64,8 @@ grpc::Status ModelDistributorServiceImpl::GetModelManifest(
     response->set_ret_code(0);
     response->set_message(message);
     *response->mutable_manifest() = record.manifest;
+    response->set_available_floor_model_version(floor);
+    response->set_latest_available_model_version(latest);
     return grpc::Status::OK;
 }
 
@@ -96,18 +85,26 @@ grpc::Status ModelDistributorServiceImpl::DownloadModel(
         registry_.RecordDownloadFailure(message);
         return grpc::Status(grpc::StatusCode::NOT_FOUND, message);
     }
-    std::ifstream input(record.path, std::ios::binary);
-    if (!input.is_open()) {
-        registry_.RecordDownloadFailure("cannot open registered model");
+    if (!record.artifact || record.artifact->descriptor < 0 ||
+        record.artifact->size != record.manifest.size_bytes()) {
+        registry_.RecordDownloadFailure("registered model handle is invalid");
         return grpc::Status(grpc::StatusCode::INTERNAL,
-                            "cannot open registered model");
+                            "registered model handle is invalid");
     }
     std::vector<char> buffer(registry_.chunk_bytes());
     int64_t offset = 0;
-    while (input.good()) {
-        input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-        const std::streamsize count = input.gcount();
-        if (count <= 0) break;
+    while (offset < record.artifact->size) {
+        const size_t requested = static_cast<size_t>(std::min<int64_t>(
+            record.artifact->size - offset,
+            static_cast<int64_t>(buffer.size())));
+        ssize_t count = ::pread(record.artifact->descriptor, buffer.data(),
+                                requested, static_cast<off_t>(offset));
+        if (count < 0 && errno == EINTR) continue;
+        if (count <= 0) {
+            registry_.RecordDownloadFailure("model download read failed");
+            return grpc::Status(grpc::StatusCode::DATA_LOSS,
+                                "model download read failed");
+        }
         rl::training::v1::ModelChunk chunk;
         *chunk.mutable_model() = record.manifest.identity();
         chunk.set_offset(offset);
@@ -117,9 +114,9 @@ grpc::Status ModelDistributorServiceImpl::DownloadModel(
             return grpc::Status(grpc::StatusCode::CANCELLED,
                                 "model download cancelled");
         }
-        offset += count;
+        offset += static_cast<int64_t>(count);
     }
-    if (input.bad() || offset != record.manifest.size_bytes()) {
+    if (offset != record.manifest.size_bytes()) {
         registry_.RecordDownloadFailure("model download read failed");
         return grpc::Status(grpc::StatusCode::DATA_LOSS,
                             "model download read failed");

@@ -187,9 +187,10 @@ bool LoadModelDistributorConfig(const std::string& yaml_path,
     if (parsed.listen_port <= 0 || parsed.listen_port > 65535 ||
         parsed.artifact_root.empty() || parsed.chunk_bytes == 0 ||
         parsed.chunk_bytes > 4 * 1024 * 1024 ||
-        parsed.retention_versions == 0 || parsed.retention_versions > 32 ||
+        parsed.retention_versions < 101 ||
+        parsed.retention_versions > 4096 ||
         parsed.contract.package_name != "rl-contracts" ||
-        parsed.contract.package_version != "0.10.0" ||
+        parsed.contract.package_version != "0.11.0" ||
         !Sha256(parsed.contract.source_digest) ||
         !Sha256(parsed.contract.artifact_digest) ||
         parsed.contract.platform.empty() ||

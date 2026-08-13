@@ -6,11 +6,14 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <chrono>
+#include <fcntl.h>
 #include <fstream>
 #include <iomanip>
 #include <limits>
 #include <sstream>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace {
@@ -102,7 +105,72 @@ bool Sha256Bytes(const void* data,
     return true;
 }
 
+bool ComputeSha256Descriptor(int descriptor,
+                             int64_t size,
+                             std::string* checksum,
+                             std::string* error) {
+    EVP_MD_CTX* context = EVP_MD_CTX_new();
+    if (context == nullptr) {
+        *error = "cannot allocate SHA-256 context";
+        return false;
+    }
+    bool ok = EVP_DigestInit_ex(context, EVP_sha256(), nullptr) == 1;
+    std::array<char, 64 * 1024> buffer{};
+    int64_t offset = 0;
+    while (ok && offset < size) {
+        const size_t requested = static_cast<size_t>(
+            std::min<int64_t>(size - offset, buffer.size()));
+        const ssize_t count = ::pread(
+            descriptor, buffer.data(), requested, static_cast<off_t>(offset));
+        if (count < 0 && errno == EINTR) continue;
+        if (count <= 0) {
+            ok = false;
+            break;
+        }
+        ok = EVP_DigestUpdate(
+                 context, buffer.data(), static_cast<size_t>(count)) == 1;
+        offset += count;
+    }
+    std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
+    unsigned int digest_size = 0;
+    if (ok && offset == size) {
+        ok = EVP_DigestFinal_ex(context, digest.data(), &digest_size) == 1;
+    } else {
+        ok = false;
+    }
+    EVP_MD_CTX_free(context);
+    if (!ok || digest_size != 32) {
+        *error = "failed to calculate SHA-256 from opened model artifact";
+        return false;
+    }
+    std::ostringstream output;
+    output << std::hex << std::setfill('0');
+    for (unsigned int index = 0; index < digest_size; ++index) {
+        output << std::setw(2) << static_cast<unsigned int>(digest[index]);
+    }
+    *checksum = output.str();
+    return true;
+}
+
+std::string VersionDirectoryName(uint64_t version) {
+    std::ostringstream output;
+    output << std::setfill('0') << std::setw(6) << version;
+    return output.str();
+}
+
 }  // namespace
+
+ModelArtifactHandle::ModelArtifactHandle(
+    int descriptor_value,
+    int64_t size_value,
+    std::filesystem::path path_value)
+    : descriptor(descriptor_value),
+      size(size_value),
+      path(std::move(path_value)) {}
+
+ModelArtifactHandle::~ModelArtifactHandle() {
+    if (descriptor >= 0) ::close(descriptor);
+}
 
 bool ComputeSha256(const std::filesystem::path& path,
                    std::string* checksum,
@@ -259,7 +327,7 @@ bool ModelRegistry::ValidateManifest(
         *error = "manifest schema, shape, or training identity is invalid";
         return false;
     }
-    if (manifest.model_file().empty() ||
+    if (manifest.model_file() != "SaveModel.onnx" ||
         std::filesystem::path(manifest.model_file()).filename() !=
             std::filesystem::path(manifest.model_file()) ||
         manifest.size_bytes() <= 0) {
@@ -287,6 +355,9 @@ bool ModelRegistry::ValidateManifest(
         return false;
     }
     if (canonical.filename() != manifest.model_file() ||
+        canonical.parent_path().parent_path() != artifact_root_ / "archive" ||
+        canonical.parent_path().filename() !=
+            VersionDirectoryName(manifest.identity().model_version()) ||
         !std::filesystem::is_regular_file(canonical)) {
         *error = "artifact file does not exist or has a mismatched name";
         return false;
@@ -322,6 +393,30 @@ rl::training::v1::ModelRegisterResult ModelRegistry::Register(
         *message = error;
         return rl::training::v1::MODEL_REGISTER_RESULT_REJECTED_INVALID;
     }
+
+    const int descriptor = ::open(
+        path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    struct stat status {};
+    std::string opened_digest;
+    if (descriptor < 0 || ::fstat(descriptor, &status) != 0 ||
+        !S_ISREG(status.st_mode) || status.st_size <= 0 ||
+        status.st_size != manifest.size_bytes() ||
+        !ComputeSha256Descriptor(descriptor, status.st_size,
+                                 &opened_digest, &error) ||
+        opened_digest != manifest.identity().artifact_digest().hex()) {
+        if (descriptor >= 0) ::close(descriptor);
+        if (error.empty()) {
+            error = "opened model artifact changed after manifest validation";
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        ++register_attempt_count_;
+        ++rejected_register_count_;
+        last_error_ = error;
+        *message = error;
+        return rl::training::v1::MODEL_REGISTER_RESULT_REJECTED_INVALID;
+    }
+    auto artifact = std::make_shared<ModelArtifactHandle>(
+        descriptor, static_cast<int64_t>(status.st_size), path);
     std::lock_guard<std::mutex> lock(mutex_);
     ++register_attempt_count_;
     const ModelKey key{manifest.identity().model_lineage_id(),
@@ -342,20 +437,24 @@ rl::training::v1::ModelRegisterResult ModelRegistry::Register(
     }
     const auto latest = latest_version_seen_.find(key.lineage_id);
     if (latest != latest_version_seen_.end() &&
-        key.version + config_.retention_versions <= latest->second) {
+        (latest->second == std::numeric_limits<uint64_t>::max() ||
+         key.version != latest->second + 1)) {
         ++rejected_register_count_;
-        last_error_ = "model version is outside the serving retention window";
+        last_error_ = key.version <= latest->second
+                          ? "model version is stale or no longer available"
+                          : "model publication sequence contains a gap";
         *message = last_error_;
         return rl::training::v1::MODEL_REGISTER_RESULT_REJECTED_INVALID;
     }
-    RegisteredModel record{manifest, path};
+    RegisteredModel record{manifest, path, std::move(artifact)};
     models_.emplace(key, record);
-    latest_version_seen_[key.lineage_id] =
-        latest == latest_version_seen_.end()
-            ? key.version
-            : std::max(latest->second, key.version);
-    latest_model_ = manifest.identity();
-    has_latest_model_ = true;
+    latest_version_seen_[key.lineage_id] = key.version;
+    if (!has_latest_model_ ||
+        latest_model_.model_lineage_id() != key.lineage_id ||
+        key.version >= latest_model_.model_version()) {
+        latest_model_ = manifest.identity();
+        has_latest_model_ = true;
+    }
 
     std::vector<ModelKey> lineage_keys;
     for (const auto& [candidate, value] : models_) {
@@ -369,6 +468,7 @@ rl::training::v1::ModelRegisterResult ModelRegistry::Register(
         lineage_keys.erase(lineage_keys.begin());
         models_.erase(removed);
     }
+    PruneSettlementFactsLocked(key.lineage_id);
     *registered = record;
     *message = "model registered";
     return rl::training::v1::MODEL_REGISTER_RESULT_REGISTERED;
@@ -441,16 +541,105 @@ bool ModelRegistry::GetLatest(const std::string& lineage_id,
     return true;
 }
 
+bool ModelRegistry::GetAvailableRange(const std::string& lineage_id,
+                                      uint64_t* floor,
+                                      uint64_t* latest,
+                                      std::string* message) const {
+    if (lineage_id.empty() || floor == nullptr || latest == nullptr) {
+        if (message != nullptr) *message = "model lineage is required";
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    return AvailableRangeLocked(lineage_id, floor, latest, message);
+}
+
+bool ModelRegistry::AvailableRangeLocked(const std::string& lineage_id,
+                                         uint64_t* floor,
+                                         uint64_t* latest,
+                                         std::string* message) const {
+    const auto latest_found = latest_version_seen_.find(lineage_id);
+    if (latest_found == latest_version_seen_.end() ||
+        models_.find(ModelKey{lineage_id, latest_found->second}) ==
+            models_.end()) {
+        if (message != nullptr) *message = "model lineage not found";
+        return false;
+    }
+    *latest = latest_found->second;
+    *floor = *latest;
+    while (*floor > 0 &&
+           models_.find(ModelKey{lineage_id, *floor - 1}) != models_.end()) {
+        --(*floor);
+    }
+    if (message != nullptr) *message = "contiguous model range found";
+    return true;
+}
+
+bool ModelRegistry::GetManifestSnapshot(
+    const rl::training::v1::ModelIdentity& selector,
+    bool latest_in_lineage,
+    RegisteredModel* model,
+    uint64_t* floor,
+    uint64_t* latest,
+    std::string* message) {
+    if (selector.model_lineage_id().empty() || model == nullptr ||
+        floor == nullptr || latest == nullptr || message == nullptr) {
+        if (message != nullptr) *message = "model selector is invalid";
+        return false;
+    }
+    const bool has_artifact_digest =
+        selector.has_artifact_digest() &&
+        !selector.artifact_digest().hex().empty();
+    const bool has_manifest_digest =
+        selector.has_manifest_digest() &&
+        !selector.manifest_digest().hex().empty();
+    if (!latest_in_lineage && has_artifact_digest != has_manifest_digest) {
+        *message = "requested model selector has incomplete digest identity";
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    ModelKey key{selector.model_lineage_id(), selector.model_version()};
+    if (latest_in_lineage) {
+        const auto latest_found = latest_version_seen_.find(key.lineage_id);
+        if (latest_found == latest_version_seen_.end()) {
+            *message = "model lineage not found";
+            return false;
+        }
+        key.version = latest_found->second;
+    }
+    const auto found = models_.find(key);
+    if (found == models_.end() ||
+        (!latest_in_lineage && has_artifact_digest &&
+         found->second.manifest.identity().SerializeAsString() !=
+             selector.SerializeAsString())) {
+        last_error_ = has_artifact_digest ? "model identity not found"
+                                          : "model version not found";
+        *message = last_error_;
+        return false;
+    }
+    if (!AvailableRangeLocked(key.lineage_id, floor, latest, message)) {
+        return false;
+    }
+    *model = found->second;
+    *message = latest_in_lineage ? "latest model found" : "model found";
+    return true;
+}
+
 std::string ModelRegistry::AckKey(
     const rl::training::v1::AckModelReq& request) {
-    return ServiceKey(request.aiserver()) + "\x1f" +
-           request.load_instance_id();
+    return DownloadKey(request.aiserver(), request.model());
 }
 
 std::string ModelRegistry::ServiceKey(
     const rl::common::v1::ServiceInstanceIdentity& service) {
     return service.component() + "\x1f" + service.instance_id() + "\x1f" +
            std::to_string(service.lifecycle_epoch());
+}
+
+std::string ModelRegistry::DownloadKey(
+    const rl::common::v1::ServiceInstanceIdentity& service,
+    const rl::training::v1::ModelIdentity& model) {
+    return ServiceKey(service) + "\x1e" + model.SerializeAsString();
 }
 
 bool ModelRegistry::AckEquivalent(
@@ -483,25 +672,22 @@ rl::training::v1::ModelAckResult ModelRegistry::Ack(
         *message = last_error_;
         return rl::training::v1::MODEL_ACK_RESULT_REJECTED;
     }
-    const ModelKey model_key{request.model().model_lineage_id(),
-                             request.model().model_version()};
-    const auto model = models_.find(model_key);
     const auto completed = completed_downloads_.find(
-        ServiceKey(request.aiserver()));
-    const bool registered_identity =
-        model != models_.end() &&
-        model->second.manifest.identity().SerializeAsString() ==
-            request.model().SerializeAsString();
+        DownloadKey(request.aiserver(), request.model()));
     const bool completed_download_identity =
         completed != completed_downloads_.end() &&
         completed->second.SerializeAsString() ==
             request.model().SerializeAsString();
-    if (!registered_identity && !completed_download_identity) {
-        last_error_ = "model identity not found";
+    if (!completed_download_identity) {
+        last_error_ = "completed model download fact not found";
         *message = last_error_;
         return rl::training::v1::MODEL_ACK_RESULT_NOT_FOUND;
     }
     acknowledgements_.emplace(key, request);
+    acknowledgement_models_.emplace(
+        key,
+        ModelKey{request.model().model_lineage_id(),
+                 request.model().model_version()});
     if (completed_download_identity) completed_downloads_.erase(completed);
     latest_ack_aiserver_ = request.aiserver();
     latest_ack_model_ = request.model();
@@ -517,6 +703,37 @@ rl::training::v1::ModelAckResult ModelRegistry::Ack(
     return rl::training::v1::MODEL_ACK_RESULT_APPLIED;
 }
 
+void ModelRegistry::PruneSettlementFactsLocked(
+    const std::string& lineage_id) {
+    const auto latest = latest_version_seen_.find(lineage_id);
+    if (latest == latest_version_seen_.end()) return;
+    const uint64_t latest_version = latest->second;
+    auto outside_retention = [&](const ModelKey& key) {
+        return key.lineage_id == lineage_id &&
+               key.version <= latest_version &&
+               latest_version - key.version >= config_.retention_versions;
+    };
+    for (auto iterator = acknowledgement_models_.begin();
+         iterator != acknowledgement_models_.end();) {
+        if (!outside_retention(iterator->second)) {
+            ++iterator;
+            continue;
+        }
+        acknowledgements_.erase(iterator->first);
+        iterator = acknowledgement_models_.erase(iterator);
+    }
+    for (auto iterator = completed_downloads_.begin();
+         iterator != completed_downloads_.end();) {
+        const auto& model = iterator->second;
+        const ModelKey key{model.model_lineage_id(), model.model_version()};
+        if (outside_retention(key)) {
+            iterator = completed_downloads_.erase(iterator);
+        } else {
+            ++iterator;
+        }
+    }
+}
+
 void ModelRegistry::RecordDownloadAttempt() {
     std::lock_guard<std::mutex> lock(mutex_);
     ++download_request_count_;
@@ -529,7 +746,10 @@ void ModelRegistry::RecordDownloadSuccess(
     std::lock_guard<std::mutex> lock(mutex_);
     ++download_success_count_;
     bytes_served_ += bytes;
-    completed_downloads_[ServiceKey(requester)] = model;
+    // A stream may finish after its registry entry was evicted. RegisterModel
+    // prunes old settlement facts on every publication, while this exact fact
+    // lets that already-open stream complete one idempotent model-level ACK.
+    completed_downloads_[DownloadKey(requester, model)] = model;
 }
 
 void ModelRegistry::RecordDownloadFailure(const std::string& error) {
@@ -545,7 +765,27 @@ void ModelRegistry::GetStatus(
     FillDistributorIdentity(response->mutable_distributor());
     response->set_ready(true);
     response->set_registered_model_count(static_cast<int64_t>(models_.size()));
-    if (has_latest_model_) *response->mutable_latest_model() = latest_model_;
+    if (has_latest_model_) {
+        *response->mutable_latest_model() = latest_model_;
+        uint64_t floor = 0;
+        uint64_t latest = 0;
+        const auto latest_found = latest_version_seen_.find(
+            latest_model_.model_lineage_id());
+        if (latest_found != latest_version_seen_.end() &&
+            models_.find(ModelKey{latest_model_.model_lineage_id(),
+                                  latest_found->second}) != models_.end()) {
+            latest = latest_found->second;
+            floor = latest;
+            while (floor > 0 &&
+                   models_.find(ModelKey{
+                       latest_model_.model_lineage_id(), floor - 1}) !=
+                       models_.end()) {
+                --floor;
+            }
+            response->set_available_floor_model_version(floor);
+            response->set_latest_available_model_version(latest);
+        }
+    }
     response->set_register_attempt_count(register_attempt_count_);
     response->set_duplicate_register_count(duplicate_register_count_);
     response->set_rejected_register_count(rejected_register_count_);

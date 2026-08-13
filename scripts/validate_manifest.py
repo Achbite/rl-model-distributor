@@ -4,9 +4,20 @@ import json
 import re
 import sys
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 
 SHA256 = re.compile(r"[a-f0-9]{64}")
+MAX_MODEL_VERSION = (1 << 64) - 1
+CONTRACT_SOURCE_DIGEST = (
+    "7e3eb7227e67a2a880130c9c82f87041691c0095f838a60f80abc1f387c1c5b3"
+)
+CONTRACT_ARTIFACT_DIGEST = (
+    "077ac6d61486fafd5f0430eeb05a492764b36e073282f6d7626d0414bb5b2ddf"
+)
+CONTRACT_GENERATOR_IDENTITY = (
+    "0eb73fc2cb675bdb34bf3db9c99dae62a82f93a5e3a72db84dcf3936464729c8"
+)
 LEGACY_FIELDS = {
     "schema_version",
     "contract_version",
@@ -67,18 +78,30 @@ def main() -> int:
     if data["manifest_schema_version"] != 1:
         raise ValueError("manifest_schema_version must be 1")
     contract = data["contract"]
-    if not isinstance(contract, dict) or contract.get("package_name") != "rl-contracts" or contract.get("package_version") != "0.10.0":
-        raise ValueError("contract must identify rl-contracts 0.10.0")
+    if not isinstance(contract, dict) or contract.get("package_name") != "rl-contracts" or contract.get("package_version") != "0.11.0":
+        raise ValueError("contract must identify rl-contracts 0.11.0")
     require_digest(contract.get("source_digest"), "contract.source_digest")
     require_digest(contract.get("artifact_digest"), "contract.artifact_digest")
     require_digest(contract.get("generator_identity"), "contract.generator_identity")
-    if not isinstance(contract.get("platform"), str) or not contract["platform"]:
-        raise ValueError("contract.platform is required")
+    if (
+        contract.get("source_digest") != CONTRACT_SOURCE_DIGEST
+        or contract.get("artifact_digest") != CONTRACT_ARTIFACT_DIGEST
+        or contract.get("generator_identity")
+        != CONTRACT_GENERATOR_IDENTITY
+        or contract.get("platform") != "linux/arm64"
+    ):
+        raise ValueError("contract identity does not match the selected 0.11.0 artifact")
     identity = data["identity"]
     if not isinstance(identity, dict) or not identity.get("model_lineage_id"):
         raise ValueError("identity.model_lineage_id is required")
-    if not isinstance(identity.get("model_version"), int) or identity["model_version"] < 0:
-        raise ValueError("identity.model_version must be non-negative")
+    version = identity.get("model_version")
+    if (
+        isinstance(version, bool)
+        or not isinstance(version, int)
+        or version < 0
+        or version > MAX_MODEL_VERSION
+    ):
+        raise ValueError("identity.model_version must be a uint64 integer")
     require_digest(identity.get("artifact_digest"), "identity.artifact_digest")
     require_digest(identity.get("manifest_digest"), "identity.manifest_digest")
     require_schema(data["observation_schema"], "observation_schema")
@@ -120,10 +143,21 @@ def main() -> int:
             for dimension in shape
         ):
             raise ValueError(f"{field} must contain positive dimensions")
-    if not isinstance(data["artifact_uri"], str) or not data["artifact_uri"].startswith("file://"):
-        raise ValueError("artifact_uri must use file://")
-    if not isinstance(data["model_file"], str) or Path(data["model_file"]).name != data["model_file"]:
-        raise ValueError("model_file must be a file name")
+    if not isinstance(data["artifact_uri"], str):
+        raise ValueError("artifact_uri must use the canonical file URI")
+    parsed_uri = urlparse(data["artifact_uri"])
+    artifact_path = Path(unquote(parsed_uri.path))
+    version_directory = f"{version:06d}"
+    if (
+        parsed_uri.scheme != "file"
+        or parsed_uri.netloc not in ("", "localhost")
+        or artifact_path.name != "SaveModel.onnx"
+        or artifact_path.parent.name != version_directory
+        or artifact_path.parent.parent.name != "archive"
+    ):
+        raise ValueError("artifact_uri must use archive/<version>/SaveModel.onnx")
+    if data["model_file"] != "SaveModel.onnx":
+        raise ValueError("model_file must be SaveModel.onnx")
     for field in ("size_bytes", "train_updates", "trained_samples", "published_at_unix_ms"):
         if not isinstance(data[field], int) or data[field] < 0:
             raise ValueError(f"{field} must be non-negative")

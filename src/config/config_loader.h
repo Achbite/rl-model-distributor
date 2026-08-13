@@ -16,7 +16,7 @@ struct ModelDistributorConfig {
     int listen_port = 9200;
     std::string artifact_root;
     std::size_t chunk_bytes = 1024 * 1024;
-    std::size_t retention_versions = 2;
+    std::size_t retention_versions = 101;
     ContractConfig contract;
 };
 

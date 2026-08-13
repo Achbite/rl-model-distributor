@@ -5,8 +5,10 @@
 
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <unistd.h>
 
@@ -17,6 +19,15 @@ int Fail(const std::string& message) {
     return 1;
 }
 
+std::filesystem::path ModelPath(const std::filesystem::path& root,
+                                uint64_t version) {
+    std::ostringstream directory;
+    directory << std::setfill('0') << std::setw(6) << version;
+    const auto path = root / "archive" / directory.str() / "SaveModel.onnx";
+    std::filesystem::create_directories(path.parent_path());
+    return path;
+}
+
 }  // namespace
 
 int main() {
@@ -25,8 +36,7 @@ int main() {
     const fs::path root = fs::temp_directory_path() /
                           ("model-distributor-rpc-" +
                            std::to_string(::getpid()));
-    fs::create_directories(root / "serving");
-    const fs::path model_path = root / "serving/model_v000000.onnx";
+    const fs::path model_path = ModelPath(root, 0);
     const std::string payload = "0123456789abcdefghijklmnopqrstuvwxyz";
     {
         std::ofstream output(model_path, std::ios::binary);
@@ -81,6 +91,10 @@ int main() {
                                 &latest_response)
              .ok() ||
         latest_response.ret_code() != 0 ||
+        !latest_response.has_available_floor_model_version() ||
+        latest_response.available_floor_model_version() != 0 ||
+        !latest_response.has_latest_available_model_version() ||
+        latest_response.latest_available_model_version() != 0 ||
         latest_response.manifest().identity().SerializeAsString() !=
             manifest.identity().SerializeAsString()) {
         server->Shutdown();
@@ -168,9 +182,7 @@ int main() {
     }
 
     for (uint64_t version = 1; version <= 2; ++version) {
-        const fs::path next_path = root / "serving" /
-                                   ("model_v00000" +
-                                    std::to_string(version) + ".onnx");
+        const fs::path next_path = ModelPath(root, version);
         {
             std::ofstream output(next_path, std::ios::binary);
             output << "model-version-" << version;
@@ -224,6 +236,10 @@ int main() {
         !status_response.ready() ||
         status_response.latest_model().SerializeAsString() !=
             latest_registered.identity().SerializeAsString() ||
+        !status_response.has_available_floor_model_version() ||
+        status_response.available_floor_model_version() != 0 ||
+        !status_response.has_latest_available_model_version() ||
+        status_response.latest_available_model_version() != 2 ||
         status_response.loaded_ack_count() != 1) {
         server->Shutdown();
         fs::remove_all(root);

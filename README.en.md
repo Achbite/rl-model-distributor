@@ -1,33 +1,49 @@
 # RL Model Distributor
 
-English | [简体中文](README.md)
+[简体中文](README.md) | English
 
-C++ model registration, download, and AIServer load-ACK service at version `0.10.1`. It consumes only `rl.training.v1` model identities and has no Maze task-protocol dependency.
+## 1. Build the 0.11.0 artifact
 
-## Build
-
-Build `rl-contracts` first, then run:
+Create the Contracts artifact first, then run the build from a clean Git savepoint:
 
 ```bash
+(cd ../rl-contracts && bash build_artifact.sh)
 bash build_artifact.sh
 ```
 
-Output directory:
+The script compiles the service and runs its tests. Output:
 
 ```text
-../.workspace/artifacts/rl-model-distributor/0.10.1/<platform>/
+../.workspace/artifacts/rl-model-distributor/0.11.0/<platform>/
 ```
 
-Creating a version for the first time requires a reviewed and committed clean
-Git savepoint. The build entrypoint refuses to create a new artifact from a
-dirty worktree. An existing artifact can only be reused when both source
-identity and every file checksum still match.
+## 2. Stage it into Learner
 
-Runtime configuration must contain the complete `rl-contracts 0.10.0` artifact identity. Missing, old, or digest-mismatched identities fail closed.
+Do not copy the binary manually. Use the Learner sync entry point:
+
+```bash
+(cd ../rl-learner && bash scripts/sync_runtime_artifacts.sh)
+```
+
+## 3. Validate a model manifest
+
+```bash
+python3 scripts/validate_manifest.py tests/manifest.example.json
+```
+
+Model paths must use:
+
+```text
+archive/<step:min-width-6>/SaveModel.onnx
+```
+
+## 4. Run it directly
 
 ```bash
 ./maze_model_distributor configs/model_distributor_config.yaml
 ```
+
+During full training the Learner container supervises this process; no separate launch is required.
 
 ## License
 
