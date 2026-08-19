@@ -64,8 +64,8 @@ grpc::Status ModelDistributorServiceImpl::GetModelManifest(
     response->set_ret_code(0);
     response->set_message(message);
     *response->mutable_manifest() = record.manifest;
-    response->set_available_floor_model_version(floor);
-    response->set_latest_available_model_version(latest);
+    response->set_available_floor_model_step(floor);
+    response->set_latest_available_model_step(latest);
     return grpc::Status::OK;
 }
 

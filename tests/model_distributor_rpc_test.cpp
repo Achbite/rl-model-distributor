@@ -20,10 +20,10 @@ int Fail(const std::string& message) {
 }
 
 std::filesystem::path ModelPath(const std::filesystem::path& root,
-                                uint64_t version) {
+                                uint64_t model_step) {
     std::ostringstream directory;
-    directory << std::setfill('0') << std::setw(6) << version;
-    const auto path = root / "archive" / directory.str() / "SaveModel.onnx";
+    directory << std::setfill('0') << std::setw(7) << model_step;
+    const auto path = root / directory.str() / "SaveModel.onnx";
     std::filesystem::create_directories(path.parent_path());
     return path;
 }
@@ -91,10 +91,10 @@ int main() {
                                 &latest_response)
              .ok() ||
         latest_response.ret_code() != 0 ||
-        !latest_response.has_available_floor_model_version() ||
-        latest_response.available_floor_model_version() != 0 ||
-        !latest_response.has_latest_available_model_version() ||
-        latest_response.latest_available_model_version() != 0 ||
+        !latest_response.has_available_floor_model_step() ||
+        latest_response.available_floor_model_step() != 0 ||
+        !latest_response.has_latest_available_model_step() ||
+        latest_response.latest_available_model_step() != 0 ||
         latest_response.manifest().identity().SerializeAsString() !=
             manifest.identity().SerializeAsString()) {
         server->Shutdown();
@@ -102,23 +102,39 @@ int main() {
         return Fail("latest lineage lookup failed");
     }
 
-    rl::training::v1::GetModelManifestReq version_request;
-    version_request.mutable_requested_model()->set_model_lineage_id(
+    rl::training::v1::GetModelManifestReq step_request;
+    step_request.mutable_requested_model()->set_model_lineage_id(
         manifest.identity().model_lineage_id());
-    version_request.mutable_requested_model()->set_model_version(
-        manifest.identity().model_version());
-    Service(version_request.mutable_requester(), "aiserver", "aiserver-0");
-    rl::training::v1::GetModelManifestRsp version_response;
-    grpc::ClientContext version_context;
-    if (!stub->GetModelManifest(&version_context, version_request,
-                                &version_response)
+    step_request.mutable_requested_model()->set_model_step(
+        manifest.identity().model_step());
+    Service(step_request.mutable_requester(), "aiserver", "aiserver-0");
+    rl::training::v1::GetModelManifestRsp step_response;
+    grpc::ClientContext step_context;
+    if (!stub->GetModelManifest(&step_context, step_request,
+                                &step_response)
              .ok() ||
-        version_response.ret_code() != 0 ||
-        version_response.manifest().identity().SerializeAsString() !=
+        step_response.ret_code() != 0 ||
+        step_response.manifest().identity().SerializeAsString() !=
             manifest.identity().SerializeAsString()) {
         server->Shutdown();
         fs::remove_all(root);
-        return Fail("lineage/version selector lookup failed");
+        return Fail("lineage/step selector lookup failed");
+    }
+
+    rl::training::v1::GetModelManifestReq missing_step_request;
+    missing_step_request.mutable_requested_model()->set_model_lineage_id(
+        manifest.identity().model_lineage_id());
+    Service(missing_step_request.mutable_requester(), "aiserver",
+            "aiserver-0");
+    rl::training::v1::GetModelManifestRsp missing_step_response;
+    grpc::ClientContext missing_step_context;
+    if (!stub->GetModelManifest(&missing_step_context, missing_step_request,
+                                &missing_step_response)
+             .ok() ||
+        missing_step_response.ret_code() == 0) {
+        server->Shutdown();
+        fs::remove_all(root);
+        return Fail("exact selector without model step was accepted");
     }
 
     rl::training::v1::DownloadModelReq download_request;
@@ -165,8 +181,8 @@ int main() {
     rl::training::v1::GetModelManifestReq incomplete_request;
     incomplete_request.mutable_requested_model()->set_model_lineage_id(
         manifest.identity().model_lineage_id());
-    incomplete_request.mutable_requested_model()->set_model_version(
-        manifest.identity().model_version());
+    incomplete_request.mutable_requested_model()->set_model_step(
+        manifest.identity().model_step());
     *incomplete_request.mutable_requested_model()->mutable_artifact_digest() =
         manifest.identity().artifact_digest();
     Service(incomplete_request.mutable_requester(), "aiserver", "aiserver-0");
@@ -181,11 +197,11 @@ int main() {
         return Fail("incomplete digest selector was accepted");
     }
 
-    for (uint64_t version = 1; version <= 2; ++version) {
-        const fs::path next_path = ModelPath(root, version);
+    for (uint64_t step = 1; step <= 2; ++step) {
+        const fs::path next_path = ModelPath(root, step);
         {
             std::ofstream output(next_path, std::ios::binary);
-            output << "model-version-" << version;
+            output << "model-step-" << step;
         }
         std::string next_checksum;
         if (!ComputeSha256(next_path, &next_checksum, &error)) {
@@ -193,7 +209,7 @@ int main() {
             fs::remove_all(root);
             return Fail(error);
         }
-        latest_registered = Manifest(next_path, next_checksum, version);
+        latest_registered = Manifest(next_path, next_checksum, step);
         rl::training::v1::RegisterModelReq next_request;
         *next_request.mutable_manifest() = latest_registered;
         rl::training::v1::RegisterModelRsp next_response;
@@ -236,10 +252,10 @@ int main() {
         !status_response.ready() ||
         status_response.latest_model().SerializeAsString() !=
             latest_registered.identity().SerializeAsString() ||
-        !status_response.has_available_floor_model_version() ||
-        status_response.available_floor_model_version() != 0 ||
-        !status_response.has_latest_available_model_version() ||
-        status_response.latest_available_model_version() != 2 ||
+        !status_response.has_available_floor_model_step() ||
+        status_response.available_floor_model_step() != 0 ||
+        !status_response.has_latest_available_model_step() ||
+        status_response.latest_available_model_step() != 2 ||
         status_response.loaded_ack_count() != 1) {
         server->Shutdown();
         fs::remove_all(root);

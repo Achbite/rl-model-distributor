@@ -152,9 +152,9 @@ bool ComputeSha256Descriptor(int descriptor,
     return true;
 }
 
-std::string VersionDirectoryName(uint64_t version) {
+std::string StepDirectoryName(uint64_t step) {
     std::ostringstream output;
-    output << std::setfill('0') << std::setw(6) << version;
+    output << std::setfill('0') << std::setw(7) << step;
     return output.str();
 }
 
@@ -253,6 +253,7 @@ bool ModelRegistry::ServiceIdentityValid(
 bool ModelRegistry::ModelIdentityValid(
     const rl::training::v1::ModelIdentity& identity) {
     return !identity.model_lineage_id().empty() &&
+           identity.has_model_step() &&
            LowerSha256(identity.artifact_digest()) &&
            LowerSha256(identity.manifest_digest());
 }
@@ -295,7 +296,7 @@ bool ModelRegistry::ValidateManifest(
     const rl::training::v1::ModelArtifactManifest& manifest,
     std::filesystem::path* model_path,
     std::string* error) const {
-    if (manifest.manifest_schema_version() != 1) {
+    if (manifest.manifest_schema_version() != 2) {
         *error = "unsupported manifest schema version";
         return false;
     }
@@ -322,7 +323,7 @@ bool ModelRegistry::ValidateManifest(
             manifest.action_schema().SerializeAsString() ||
         manifest.training_semantics().model_architecture_id() !=
             manifest.model_architecture_id() ||
-        manifest.train_updates() < 0 || manifest.trained_samples() < 0 ||
+        manifest.identity().model_step() != manifest.train_updates() ||
         manifest.published_at_unix_ms() <= 0) {
         *error = "manifest schema, shape, or training identity is invalid";
         return false;
@@ -348,6 +349,14 @@ bool ModelRegistry::ValidateManifest(
         return false;
     }
     std::error_code canonical_error;
+    const auto requested_status =
+        std::filesystem::symlink_status(requested, canonical_error);
+    if (canonical_error ||
+        requested_status.type() != std::filesystem::file_type::regular) {
+        *error = "artifact must be a regular non-symbolic-link file";
+        return false;
+    }
+    canonical_error.clear();
     const std::filesystem::path canonical =
         std::filesystem::weakly_canonical(requested, canonical_error);
     if (canonical_error || !IsWithin(canonical, artifact_root_)) {
@@ -355,9 +364,9 @@ bool ModelRegistry::ValidateManifest(
         return false;
     }
     if (canonical.filename() != manifest.model_file() ||
-        canonical.parent_path().parent_path() != artifact_root_ / "archive" ||
+        canonical.parent_path().parent_path() != artifact_root_ ||
         canonical.parent_path().filename() !=
-            VersionDirectoryName(manifest.identity().model_version()) ||
+            StepDirectoryName(manifest.identity().model_step()) ||
         !std::filesystem::is_regular_file(canonical)) {
         *error = "artifact file does not exist or has a mismatched name";
         return false;
@@ -420,7 +429,7 @@ rl::training::v1::ModelRegisterResult ModelRegistry::Register(
     std::lock_guard<std::mutex> lock(mutex_);
     ++register_attempt_count_;
     const ModelKey key{manifest.identity().model_lineage_id(),
-                       manifest.identity().model_version()};
+                       manifest.identity().model_step()};
     const auto existing = models_.find(key);
     if (existing != models_.end()) {
         if (existing->second.manifest.SerializeAsString() ==
@@ -431,27 +440,33 @@ rl::training::v1::ModelRegisterResult ModelRegistry::Register(
             return rl::training::v1::MODEL_REGISTER_RESULT_ALREADY_REGISTERED;
         }
         ++rejected_register_count_;
-        last_error_ = "model lineage/version conflicts with registered identity";
+        last_error_ = "model lineage/step conflicts with registered identity";
         *message = last_error_;
         return rl::training::v1::MODEL_REGISTER_RESULT_REJECTED_CONFLICT;
     }
-    const auto latest = latest_version_seen_.find(key.lineage_id);
-    if (latest != latest_version_seen_.end() &&
-        (latest->second == std::numeric_limits<uint64_t>::max() ||
-         key.version != latest->second + 1)) {
+    const auto latest = latest_step_seen_.find(key.lineage_id);
+    if (latest == latest_step_seen_.end() && key.step != 0) {
         ++rejected_register_count_;
-        last_error_ = key.version <= latest->second
-                          ? "model version is stale or no longer available"
+        last_error_ = "model lineage must begin at step 0";
+        *message = last_error_;
+        return rl::training::v1::MODEL_REGISTER_RESULT_REJECTED_INVALID;
+    }
+    if (latest != latest_step_seen_.end() &&
+        (latest->second == std::numeric_limits<uint64_t>::max() ||
+         key.step != latest->second + 1)) {
+        ++rejected_register_count_;
+        last_error_ = key.step <= latest->second
+                          ? "model step is stale or no longer available"
                           : "model publication sequence contains a gap";
         *message = last_error_;
         return rl::training::v1::MODEL_REGISTER_RESULT_REJECTED_INVALID;
     }
     RegisteredModel record{manifest, path, std::move(artifact)};
     models_.emplace(key, record);
-    latest_version_seen_[key.lineage_id] = key.version;
+    latest_step_seen_[key.lineage_id] = key.step;
     if (!has_latest_model_ ||
         latest_model_.model_lineage_id() != key.lineage_id ||
-        key.version >= latest_model_.model_version()) {
+        key.step >= latest_model_.model_step()) {
         latest_model_ = manifest.identity();
         has_latest_model_ = true;
     }
@@ -463,7 +478,7 @@ rl::training::v1::ModelRegisterResult ModelRegistry::Register(
             lineage_keys.push_back(candidate);
         }
     }
-    while (lineage_keys.size() > config_.retention_versions) {
+    while (lineage_keys.size() > config_.retention_steps) {
         const ModelKey removed = lineage_keys.front();
         lineage_keys.erase(lineage_keys.begin());
         models_.erase(removed);
@@ -482,7 +497,7 @@ bool ModelRegistry::Get(const rl::training::v1::ModelIdentity& identity,
         return false;
     }
     std::lock_guard<std::mutex> lock(mutex_);
-    const ModelKey key{identity.model_lineage_id(), identity.model_version()};
+    const ModelKey key{identity.model_lineage_id(), identity.model_step()};
     const auto found = models_.find(key);
     if (found == models_.end() ||
         found->second.manifest.identity().SerializeAsString() !=
@@ -496,23 +511,23 @@ bool ModelRegistry::Get(const rl::training::v1::ModelIdentity& identity,
     return true;
 }
 
-bool ModelRegistry::GetByVersion(const std::string& lineage_id,
-                                 uint64_t model_version,
-                                 RegisteredModel* model,
-                                 std::string* message) {
+bool ModelRegistry::GetByStep(const std::string& lineage_id,
+                              uint64_t model_step,
+                              RegisteredModel* model,
+                              std::string* message) {
     if (lineage_id.empty()) {
         *message = "model lineage is required";
         return false;
     }
     std::lock_guard<std::mutex> lock(mutex_);
-    const auto found = models_.find(ModelKey{lineage_id, model_version});
+    const auto found = models_.find(ModelKey{lineage_id, model_step});
     if (found == models_.end()) {
-        last_error_ = "model version not found";
+        last_error_ = "model step not found";
         *message = last_error_;
         return false;
     }
     *model = found->second;
-    *message = "model version found";
+    *message = "model step found";
     return true;
 }
 
@@ -524,8 +539,8 @@ bool ModelRegistry::GetLatest(const std::string& lineage_id,
         return false;
     }
     std::lock_guard<std::mutex> lock(mutex_);
-    const auto latest = latest_version_seen_.find(lineage_id);
-    if (latest == latest_version_seen_.end()) {
+    const auto latest = latest_step_seen_.find(lineage_id);
+    if (latest == latest_step_seen_.end()) {
         last_error_ = "model lineage not found";
         *message = last_error_;
         return false;
@@ -557,8 +572,8 @@ bool ModelRegistry::AvailableRangeLocked(const std::string& lineage_id,
                                          uint64_t* floor,
                                          uint64_t* latest,
                                          std::string* message) const {
-    const auto latest_found = latest_version_seen_.find(lineage_id);
-    if (latest_found == latest_version_seen_.end() ||
+    const auto latest_found = latest_step_seen_.find(lineage_id);
+    if (latest_found == latest_step_seen_.end() ||
         models_.find(ModelKey{lineage_id, latest_found->second}) ==
             models_.end()) {
         if (message != nullptr) *message = "model lineage not found";
@@ -598,14 +613,18 @@ bool ModelRegistry::GetManifestSnapshot(
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
-    ModelKey key{selector.model_lineage_id(), selector.model_version()};
+    if (!latest_in_lineage && !selector.has_model_step()) {
+        *message = "requested model selector is missing model step";
+        return false;
+    }
+    ModelKey key{selector.model_lineage_id(), selector.model_step()};
     if (latest_in_lineage) {
-        const auto latest_found = latest_version_seen_.find(key.lineage_id);
-        if (latest_found == latest_version_seen_.end()) {
+        const auto latest_found = latest_step_seen_.find(key.lineage_id);
+        if (latest_found == latest_step_seen_.end()) {
             *message = "model lineage not found";
             return false;
         }
-        key.version = latest_found->second;
+        key.step = latest_found->second;
     }
     const auto found = models_.find(key);
     if (found == models_.end() ||
@@ -613,7 +632,7 @@ bool ModelRegistry::GetManifestSnapshot(
          found->second.manifest.identity().SerializeAsString() !=
              selector.SerializeAsString())) {
         last_error_ = has_artifact_digest ? "model identity not found"
-                                          : "model version not found";
+                                          : "model step not found";
         *message = last_error_;
         return false;
     }
@@ -687,7 +706,7 @@ rl::training::v1::ModelAckResult ModelRegistry::Ack(
     acknowledgement_models_.emplace(
         key,
         ModelKey{request.model().model_lineage_id(),
-                 request.model().model_version()});
+                 request.model().model_step()});
     if (completed_download_identity) completed_downloads_.erase(completed);
     latest_ack_aiserver_ = request.aiserver();
     latest_ack_model_ = request.model();
@@ -705,13 +724,13 @@ rl::training::v1::ModelAckResult ModelRegistry::Ack(
 
 void ModelRegistry::PruneSettlementFactsLocked(
     const std::string& lineage_id) {
-    const auto latest = latest_version_seen_.find(lineage_id);
-    if (latest == latest_version_seen_.end()) return;
-    const uint64_t latest_version = latest->second;
+    const auto latest = latest_step_seen_.find(lineage_id);
+    if (latest == latest_step_seen_.end()) return;
+    const uint64_t latest_step = latest->second;
     auto outside_retention = [&](const ModelKey& key) {
         return key.lineage_id == lineage_id &&
-               key.version <= latest_version &&
-               latest_version - key.version >= config_.retention_versions;
+               key.step <= latest_step &&
+               latest_step - key.step >= config_.retention_steps;
     };
     for (auto iterator = acknowledgement_models_.begin();
          iterator != acknowledgement_models_.end();) {
@@ -725,7 +744,7 @@ void ModelRegistry::PruneSettlementFactsLocked(
     for (auto iterator = completed_downloads_.begin();
          iterator != completed_downloads_.end();) {
         const auto& model = iterator->second;
-        const ModelKey key{model.model_lineage_id(), model.model_version()};
+        const ModelKey key{model.model_lineage_id(), model.model_step()};
         if (outside_retention(key)) {
             iterator = completed_downloads_.erase(iterator);
         } else {
@@ -769,9 +788,9 @@ void ModelRegistry::GetStatus(
         *response->mutable_latest_model() = latest_model_;
         uint64_t floor = 0;
         uint64_t latest = 0;
-        const auto latest_found = latest_version_seen_.find(
+        const auto latest_found = latest_step_seen_.find(
             latest_model_.model_lineage_id());
-        if (latest_found != latest_version_seen_.end() &&
+        if (latest_found != latest_step_seen_.end() &&
             models_.find(ModelKey{latest_model_.model_lineage_id(),
                                   latest_found->second}) != models_.end()) {
             latest = latest_found->second;
@@ -782,8 +801,8 @@ void ModelRegistry::GetStatus(
                        models_.end()) {
                 --floor;
             }
-            response->set_available_floor_model_version(floor);
-            response->set_latest_available_model_version(latest);
+            response->set_available_floor_model_step(floor);
+            response->set_latest_available_model_step(latest);
         }
     }
     response->set_register_attempt_count(register_attempt_count_);

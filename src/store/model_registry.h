@@ -41,10 +41,10 @@ public:
     bool Get(const rl::training::v1::ModelIdentity& identity,
              RegisteredModel* model,
              std::string* message);
-    bool GetByVersion(const std::string& lineage_id,
-                      uint64_t model_version,
-                      RegisteredModel* model,
-                      std::string* message);
+    bool GetByStep(const std::string& lineage_id,
+                   uint64_t model_step,
+                   RegisteredModel* model,
+                   std::string* message);
     bool GetLatest(const std::string& lineage_id,
                    RegisteredModel* model,
                    std::string* message);
@@ -84,11 +84,11 @@ public:
 private:
     struct ModelKey {
         std::string lineage_id;
-        uint64_t version = 0;
+        uint64_t step = 0;
 
         bool operator<(const ModelKey& other) const {
             return lineage_id < other.lineage_id ||
-                   (lineage_id == other.lineage_id && version < other.version);
+                   (lineage_id == other.lineage_id && step < other.step);
         }
     };
 
@@ -119,7 +119,7 @@ private:
     std::string instance_id_;
     mutable std::mutex mutex_;
     std::map<ModelKey, RegisteredModel> models_;
-    std::map<std::string, uint64_t> latest_version_seen_;
+    std::map<std::string, uint64_t> latest_step_seen_;
     std::map<std::string, rl::training::v1::ModelIdentity>
         completed_downloads_;
     std::map<std::string, rl::training::v1::AckModelReq> acknowledgements_;

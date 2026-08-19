@@ -2,7 +2,17 @@
 
 简体中文 | [English](README.en.md)
 
-## 1. 构建 0.11.0 制品
+## 1. 运行测试
+
+在已经挂载 Contracts C++ bindings 的构建容器中执行：
+
+```bash
+bash ./test.sh
+```
+
+`test.sh` 是本仓库唯一公开测试入口；新增或扩写测试必须先有用户批准的 TCR。
+
+## 2. 构建 0.13.0 制品
 
 先生成 Contracts 制品，再从 clean Git 保存点执行：
 
@@ -14,10 +24,10 @@ bash build_artifact.sh
 构建脚本会编译并运行测试。输出：
 
 ```text
-../.workspace/artifacts/rl-model-distributor/0.11.0/<platform>/
+../.workspace/artifacts/rl-model-distributor/0.13.0/<platform>/
 ```
 
-## 2. 装配到 Learner
+## 3. 装配到 Learner
 
 不要手工复制二进制。使用 Learner 同步入口：
 
@@ -25,19 +35,19 @@ bash build_artifact.sh
 (cd ../rl-learner && bash scripts/sync_runtime_artifacts.sh)
 ```
 
-## 3. 校验模型 manifest
+## 4. 校验模型 manifest
 
 ```bash
-python3 scripts/validate_manifest.py tests/manifest.example.json
+python3 scripts/validate_manifest.py /path/to/manifest.json
 ```
 
 模型路径必须使用：
 
 ```text
-archive/<step:min-width-6>/SaveModel.onnx
+models/train/<step:min-width-7>/SaveModel.onnx
 ```
 
-## 4. 单独运行
+## 5. 单独运行
 
 ```bash
 ./maze_model_distributor configs/model_distributor_config.yaml

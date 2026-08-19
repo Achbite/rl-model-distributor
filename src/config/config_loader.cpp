@@ -133,7 +133,7 @@ bool LoadModelDistributorConfig(const std::string& yaml_path,
     }
     static const std::set<std::string> allowed = {
         "server.listen_port",          "model.artifact_root",
-        "model.chunk_bytes",           "model.retention_versions",
+        "model.chunk_bytes",           "model.retention_steps",
         "contract.package_name",       "contract.package_version",
         "contract.source_digest",      "contract.artifact_digest",
         "contract.platform",           "contract.generator_identity",
@@ -158,7 +158,7 @@ bool LoadModelDistributorConfig(const std::string& yaml_path,
     const std::string* port = get("server", "listen_port");
     const std::string* root = get("model", "artifact_root");
     const std::string* chunk = get("model", "chunk_bytes");
-    const std::string* retention = get("model", "retention_versions");
+    const std::string* retention = get("model", "retention_steps");
     const std::string* package = get("contract", "package_name");
     const std::string* version = get("contract", "package_version");
     const std::string* source = get("contract", "source_digest");
@@ -172,7 +172,7 @@ bool LoadModelDistributorConfig(const std::string& yaml_path,
     ModelDistributorConfig parsed;
     if (!Integer(*port, &parsed.listen_port) ||
         !Integer(*chunk, &parsed.chunk_bytes) ||
-        !Integer(*retention, &parsed.retention_versions)) {
+        !Integer(*retention, &parsed.retention_steps)) {
         std::cerr << "[ModelDistributor] malformed numeric config value"
                   << std::endl;
         return false;
@@ -187,10 +187,9 @@ bool LoadModelDistributorConfig(const std::string& yaml_path,
     if (parsed.listen_port <= 0 || parsed.listen_port > 65535 ||
         parsed.artifact_root.empty() || parsed.chunk_bytes == 0 ||
         parsed.chunk_bytes > 4 * 1024 * 1024 ||
-        parsed.retention_versions < 101 ||
-        parsed.retention_versions > 4096 ||
+        parsed.retention_steps != 101 ||
         parsed.contract.package_name != "rl-contracts" ||
-        parsed.contract.package_version != "0.11.0" ||
+        parsed.contract.package_version != "0.13.0" ||
         !Sha256(parsed.contract.source_digest) ||
         !Sha256(parsed.contract.artifact_digest) ||
         parsed.contract.platform.empty() ||
@@ -212,6 +211,13 @@ bool LoadModelDistributorConfig(const std::string& yaml_path,
     if (const char* root_override = std::getenv("RL_MODEL_ARTIFACT_ROOT")) {
         if (*root_override == '\0') return false;
         parsed.artifact_root = root_override;
+    }
+    if (parsed.artifact_root ==
+        "__DIRECT_ARTIFACT_ROOT_REQUIRED__") {
+        std::cerr << "[ModelDistributor] RL_MODEL_ARTIFACT_ROOT must bind "
+                     "the current isolated models/train directory"
+                  << std::endl;
+        return false;
     }
     output = parsed;
     return true;

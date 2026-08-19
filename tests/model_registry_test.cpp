@@ -32,10 +32,10 @@ bool WriteModel(const std::filesystem::path& path,
 }
 
 std::filesystem::path ModelPath(const std::filesystem::path& root,
-                                uint64_t version) {
+                                uint64_t model_step) {
     std::ostringstream directory;
-    directory << std::setfill('0') << std::setw(6) << version;
-    return root / "archive" / directory.str() / "SaveModel.onnx";
+    directory << std::setfill('0') << std::setw(7) << model_step;
+    return root / directory.str() / "SaveModel.onnx";
 }
 
 }  // namespace
@@ -68,10 +68,10 @@ int main() {
     RefreshManifestDigest(&manifest_conflict);
     if (registry.Register(manifest_conflict, &record, &message) !=
         rl::training::v1::MODEL_REGISTER_RESULT_REJECTED_CONFLICT) {
-        return Fail("lineage/version manifest conflict was accepted");
+        return Fail("lineage/step manifest conflict was accepted");
     }
     auto stale_contract = manifest;
-    stale_contract.mutable_contract()->set_package_version("0.7.0");
+    stale_contract.mutable_contract()->set_package_version("0.12.0");
     RefreshManifestDigest(&stale_contract);
     if (registry.Register(stale_contract, &record, &message) !=
         rl::training::v1::MODEL_REGISTER_RESULT_REJECTED_INVALID) {
@@ -84,6 +84,20 @@ int main() {
         rl::training::v1::MODEL_REGISTER_RESULT_REJECTED_INVALID) {
         return Fail("incorrect canonical manifest digest was accepted");
     }
+    auto missing_step = manifest;
+    missing_step.mutable_identity()->clear_model_step();
+    RefreshManifestDigest(&missing_step);
+    if (registry.Register(missing_step, &record, &message) !=
+        rl::training::v1::MODEL_REGISTER_RESULT_REJECTED_INVALID) {
+        return Fail("missing model step was accepted");
+    }
+    auto mismatched_update = manifest;
+    mismatched_update.set_train_updates(1);
+    RefreshManifestDigest(&mismatched_update);
+    if (registry.Register(mismatched_update, &record, &message) !=
+        rl::training::v1::MODEL_REGISTER_RESULT_REJECTED_INVALID) {
+        return Fail("model step and train_updates mismatch was accepted");
+    }
     auto outside = manifest;
     outside.set_artifact_uri("file:///tmp/outside.onnx");
     RefreshManifestDigest(&outside);
@@ -92,7 +106,7 @@ int main() {
         return Fail("outside artifact path was accepted");
     }
     const fs::path noncanonical_path =
-        root / "runtime" / "000000" / "SaveModel.onnx";
+        root / "000000" / "SaveModel.onnx";
     std::string noncanonical_digest;
     if (!WriteModel(noncanonical_path, "noncanonical",
                     &noncanonical_digest)) {
@@ -101,7 +115,7 @@ int main() {
     auto noncanonical = Manifest(noncanonical_path, noncanonical_digest);
     if (registry.Register(noncanonical, &record, &message) !=
         rl::training::v1::MODEL_REGISTER_RESULT_REJECTED_INVALID) {
-        return Fail("non-archive model publication path was accepted");
+        return Fail("noncanonical model publication path was accepted");
     }
 
     if (!registry.Get(manifest.identity(), &record, &message) ||
@@ -112,10 +126,10 @@ int main() {
     auto wrong_identity = manifest.identity();
     wrong_identity.mutable_artifact_digest()->set_hex(std::string(64, 'f'));
     if (registry.Get(wrong_identity, &record, &message)) {
-        return Fail("same version with wrong digest was returned");
+        return Fail("same step with wrong digest was returned");
     }
     if (!registry.GetLatest("maze-fixed-map-seed-0", &record, &message) ||
-        record.manifest.identity().model_version() != 0) {
+        record.manifest.identity().model_step() != 0) {
         return Fail("lineage latest lookup failed");
     }
 
@@ -174,21 +188,36 @@ int main() {
         download_cv.wait(lock, [&] { return download_holds_handle; });
     }
 
-    rl::training::v1::ModelIdentity version_one_identity;
-    for (uint64_t version = 1; version <= 101; ++version) {
-        const fs::path path = ModelPath(root, version);
+    const fs::path nonzero_initial_path = ModelPath(root, 1);
+    std::string nonzero_initial_digest;
+    if (!WriteModel(nonzero_initial_path, "nonzero-initial",
+                    &nonzero_initial_digest)) {
+        return Fail("failed to create nonzero initial model");
+    }
+    ModelRegistry nonzero_initial_registry(Config(root));
+    const auto nonzero_initial = Manifest(
+        nonzero_initial_path, nonzero_initial_digest, 1,
+        "nonzero-initial-lineage");
+    if (nonzero_initial_registry.Register(nonzero_initial, &record, &message) !=
+        rl::training::v1::MODEL_REGISTER_RESULT_REJECTED_INVALID) {
+        return Fail("a lineage beginning above model step 0 was accepted");
+    }
+
+    rl::training::v1::ModelIdentity step_one_identity;
+    for (uint64_t step = 1; step <= 101; ++step) {
+        const fs::path path = ModelPath(root, step);
         std::string digest;
-        if (!WriteModel(path, "model-version-" + std::to_string(version),
+        if (!WriteModel(path, "model-step-" + std::to_string(step),
                         &digest)) {
             return Fail("failed to create retained model");
         }
-        auto next = Manifest(path, digest, version);
+        auto next = Manifest(path, digest, step);
         if (registry.Register(next, &record, &message) !=
             rl::training::v1::MODEL_REGISTER_RESULT_REGISTERED) {
-            return Fail("retained version register failed: " + message);
+            return Fail("retained step register failed: " + message);
         }
-        if (version == 1) {
-            version_one_identity = next.identity();
+        if (step == 1) {
+            step_one_identity = next.identity();
             registry.RecordDownloadSuccess(requester, next.identity(),
                                            next.size_bytes());
         }
@@ -197,17 +226,17 @@ int main() {
         return Fail("old exact model was not evicted");
     }
     if (!registry.GetLatest("maze-fixed-map-seed-0", &record, &message) ||
-        record.manifest.identity().model_version() != 101) {
+        record.manifest.identity().model_step() != 101) {
         return Fail("latest lineage identity is incorrect after retention");
     }
-    if (!registry.GetByVersion("maze-fixed-map-seed-0", 1,
-                               &record, &message) ||
-        record.manifest.identity().model_version() != 1) {
-        return Fail("retained model version selector failed");
+    if (!registry.GetByStep("maze-fixed-map-seed-0", 1,
+                            &record, &message) ||
+        record.manifest.identity().model_step() != 1) {
+        return Fail("retained model step selector failed");
     }
-    if (registry.GetByVersion("maze-fixed-map-seed-0", 0,
-                              &record, &message)) {
-        return Fail("evicted model version selector unexpectedly succeeded");
+    if (registry.GetByStep("maze-fixed-map-seed-0", 0,
+                           &record, &message)) {
+        return Fail("evicted model step selector unexpectedly succeeded");
     }
     if (registry.Ack(ack, &message) !=
         rl::training::v1::MODEL_ACK_RESULT_NOT_FOUND) {
@@ -244,13 +273,13 @@ int main() {
         rl::training::v1::MODEL_ACK_RESULT_ALREADY_APPLIED) {
         return Fail("same model settlement diverged by load instance");
     }
-    rl::training::v1::AckModelReq version_one_ack;
-    *version_one_ack.mutable_aiserver() = requester;
-    *version_one_ack.mutable_model() = version_one_identity;
-    version_one_ack.set_load_instance_id("load-version-one");
-    version_one_ack.set_load_status(
+    rl::training::v1::AckModelReq step_one_ack;
+    *step_one_ack.mutable_aiserver() = requester;
+    *step_one_ack.mutable_model() = step_one_identity;
+    step_one_ack.set_load_instance_id("load-step-one");
+    step_one_ack.set_load_status(
         rl::training::v1::MODEL_LOAD_STATUS_LOADED);
-    if (registry.Ack(version_one_ack, &message) !=
+    if (registry.Ack(step_one_ack, &message) !=
         rl::training::v1::MODEL_ACK_RESULT_APPLIED) {
         return Fail("same requester lost a distinct model download fact");
     }
@@ -264,62 +293,22 @@ int main() {
         return Fail("actual contiguous model range is incorrect");
     }
     if (!status.ready() || status.registered_model_count() != 101 ||
-        status.latest_model().model_version() != 101 ||
-        !status.has_available_floor_model_version() ||
-        status.available_floor_model_version() != 1 ||
-        !status.has_latest_available_model_version() ||
-        status.latest_available_model_version() != 101 ||
+        status.latest_model().model_step() != 101 ||
+        !status.has_available_floor_model_step() ||
+        status.available_floor_model_step() != 1 ||
+        !status.has_latest_available_model_step() ||
+        status.latest_available_model_step() != 101 ||
         status.loaded_ack_count() != 3 ||
         status.duplicate_register_count() != 1 ||
-        status.rejected_register_count() != 5 ||
-        status.contract().package_version() != "0.11.0" ||
+        status.rejected_register_count() != 7 ||
+        status.contract().package_version() != "0.13.0" ||
         status.distributor().component() != "model-distributor") {
         return Fail("status identity or counters do not match operations");
     }
 
-    ModelRegistry boundary_registry(Config(root));
-    const uint64_t max_version = std::numeric_limits<uint64_t>::max();
-    for (uint64_t version = max_version - 100;; ++version) {
-        const fs::path path = ModelPath(root, version);
-        std::string digest;
-        if (!WriteModel(path, "boundary-" + std::to_string(version),
-                        &digest)) {
-            return Fail("failed to create uint64 boundary model");
-        }
-        const auto boundary = Manifest(
-            path, digest, version, "uint64-boundary-lineage");
-        if (boundary_registry.Register(boundary, &record, &message) !=
-            rl::training::v1::MODEL_REGISTER_RESULT_REGISTERED) {
-            return Fail("valid uint64 retention boundary was rejected");
-        }
-        if (version == max_version) break;
-    }
-    const uint64_t rejected_version = max_version - 101;
-    const fs::path rejected_path = ModelPath(root, rejected_version);
-    std::string rejected_digest;
-    if (!WriteModel(rejected_path, "outside-boundary", &rejected_digest)) {
-        return Fail("failed to create rejected boundary model");
-    }
-    const auto rejected_boundary = Manifest(
-        rejected_path, rejected_digest, rejected_version,
-        "uint64-boundary-lineage");
-    if (boundary_registry.Register(rejected_boundary, &record, &message) !=
-        rl::training::v1::MODEL_REGISTER_RESULT_REJECTED_INVALID) {
-        return Fail("uint64 model outside retention was accepted");
-    }
-    uint64_t boundary_floor = 0;
-    uint64_t boundary_latest = 0;
-    if (!boundary_registry.GetAvailableRange(
-            "uint64-boundary-lineage", &boundary_floor, &boundary_latest,
-            &message) ||
-        boundary_floor != max_version - 100 ||
-        boundary_latest != max_version) {
-        return Fail("uint64 contiguous range is incorrect");
-    }
-
     const fs::path gap_path = ModelPath(root, 1000000);
     std::string gap_digest;
-    if (!WriteModel(gap_path, "gap-version", &gap_digest)) {
+    if (!WriteModel(gap_path, "gap-step", &gap_digest)) {
         return Fail("failed to create gap model");
     }
     const auto gap = Manifest(
