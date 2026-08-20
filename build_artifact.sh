@@ -13,7 +13,8 @@ platform="$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}')"
 platform_dir="${platform//\//-}"
 contract_dir="${contract_root}/${RL_CONTRACTS_VERSION}/${platform_dir}"
 if ! test -f "${contract_dir}/manifest.json" ||
-   ! test -f "${contract_dir}/cpp/maze.pb.cc"; then
+   ! test -f "${contract_dir}/cpp/common.pb.cc" ||
+   ! test -f "${contract_dir}/cpp/training.pb.cc"; then
     echo "rl-contracts artifact is missing; run: (cd ../rl-contracts && bash build_artifact.sh)" >&2
     exit 1
 fi
@@ -34,9 +35,12 @@ for path in sorted(root.rglob("*")):
 print(digest.hexdigest())
 PY
 )"
+source_status="$(git -C "${repo_dir}" status --porcelain=v1)"
 source_id="${source_commit}"
-if test -n "$(git -C "${repo_dir}" status --porcelain=v1)"; then
-    source_id="${source_commit}-dirty-${source_sha256:0:12}"
+if test -n "${source_status}"; then
+    echo "refusing to create or reuse a model-distributor artifact from a dirty worktree" >&2
+    echo "commit the reviewed source first, then rerun this command" >&2
+    exit 1
 fi
 
 output_dir="${artifact_root}/${version}/${platform_dir}"
@@ -62,6 +66,8 @@ if not manifest_path.is_file():
     raise SystemExit(1)
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 contract = json.loads(Path(os.environ["CONTRACT_MANIFEST"]).read_text(encoding="utf-8"))
+if contract.get("source_tree_state") != "clean":
+    raise SystemExit(1)
 expected = {
     "package": "rl-model-distributor",
     "version": os.environ["PACKAGE_VERSION"],
@@ -73,8 +79,10 @@ if any(manifest.get(key) != value for key, value in expected.items()):
     raise SystemExit(1)
 expected_contract = {
     "version": contract["version"],
-    "source_id": contract["source_id"],
-    "source_sha256": contract["source_sha256"],
+    "source_digest": contract["source_digest"],
+    "artifact_digest": contract["artifact_digest"],
+    "platform": contract["platform"],
+    "generator_identity": contract["generator_identity"],
 }
 if manifest.get("contract") != expected_contract:
     raise SystemExit(1)
@@ -107,12 +115,13 @@ docker run --rm \
     "${builder_image}" \
     bash -lc '
         set -euo pipefail
+        cd /source
+        bash ./test.sh
         cmake -S /source -B /tmp/model-distributor-build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_TESTING=ON \
+            -DBUILD_TESTING=OFF \
             -DCONTRACT_CPP_DIR=/contracts/cpp
         cmake --build /tmp/model-distributor-build --parallel
-        ctest --test-dir /tmp/model-distributor-build --output-on-failure
         cp /tmp/model-distributor-build/maze_model_distributor /output/bin/
     '
 
@@ -151,8 +160,10 @@ manifest = {
     "abi": "cxx17-grpc-debian13",
     "contract": {
         "version": contract["version"],
-        "source_id": contract["source_id"],
-        "source_sha256": contract["source_sha256"],
+        "source_digest": contract["source_digest"],
+        "artifact_digest": contract["artifact_digest"],
+        "platform": contract["platform"],
+        "generator_identity": contract["generator_identity"],
     },
     "files": files,
 }

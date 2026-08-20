@@ -3,23 +3,24 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
 
 namespace {
 
-struct YamlEntry {
+struct Entry {
     std::string section;
     std::string key;
     std::string value;
 };
 
 std::string Trim(const std::string& value) {
-    const auto start = value.find_first_not_of(" \t\r\n");
-    if (start == std::string::npos) return "";
-    const auto end = value.find_last_not_of(" \t\r\n");
-    return value.substr(start, end - start + 1);
+    const size_t first = value.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return "";
+    const size_t last = value.find_last_not_of(" \t\r\n");
+    return value.substr(first, last - first + 1);
 }
 
 std::string StripQuotes(const std::string& value) {
@@ -31,114 +32,193 @@ std::string StripQuotes(const std::string& value) {
     return value;
 }
 
-std::vector<YamlEntry> ParseYaml(const std::string& text) {
-    std::vector<YamlEntry> entries;
+bool Parse(const std::string& text,
+           std::vector<Entry>* entries,
+           std::string* error) {
     std::istringstream stream(text);
     std::string line;
     std::string section;
+    int line_number = 0;
     while (std::getline(stream, line)) {
-        const auto comment = line.find('#');
-        if (comment != std::string::npos) line = line.substr(0, comment);
+        ++line_number;
+        bool quoted = false;
+        for (size_t index = 0; index < line.size(); ++index) {
+            if (line[index] == '"' || line[index] == '\'') {
+                quoted = !quoted;
+            } else if (line[index] == '#' && !quoted) {
+                line.erase(index);
+                break;
+            }
+        }
         const std::string trimmed = Trim(line);
         if (trimmed.empty()) continue;
-        const auto colon = trimmed.find(':');
-        if (colon == std::string::npos) continue;
+        const size_t colon = trimmed.find(':');
+        if (colon == std::string::npos) {
+            *error = "line " + std::to_string(line_number) + " lacks ':'";
+            return false;
+        }
         const std::string key = Trim(trimmed.substr(0, colon));
         const std::string value = Trim(trimmed.substr(colon + 1));
-        const bool indented =
-            !line.empty() && (line.front() == ' ' || line.front() == '\t');
+        const bool indented = !line.empty() &&
+                              (line.front() == ' ' || line.front() == '\t');
         if (!indented && value.empty()) {
             section = key;
-        } else if (indented && !key.empty()) {
-            entries.push_back({section, key, StripQuotes(value)});
+        } else if (indented && !section.empty() && !key.empty() &&
+                   !value.empty()) {
+            entries->push_back({section, key, StripQuotes(value)});
+        } else {
+            *error = "line " + std::to_string(line_number) +
+                     " has unsupported YAML structure";
+            return false;
         }
     }
-    return entries;
+    return true;
 }
 
-std::string FindValue(const std::vector<YamlEntry>& entries,
-                      const std::string& section,
-                      const std::string& key) {
+const std::string* Required(const std::vector<Entry>& entries,
+                            const std::string& section,
+                            const std::string& key) {
+    const std::string* found = nullptr;
     for (const auto& entry : entries) {
-        if (entry.section == section && entry.key == key) return entry.value;
+        if (entry.section == section && entry.key == key) {
+            if (found != nullptr) return nullptr;
+            found = &entry.value;
+        }
     }
-    return "";
+    return found;
 }
 
-std::string Env(const char* name) {
-    const char* value = std::getenv(name);
-    return value ? value : "";
-}
-
-int SafeInt(const std::string& value, int fallback) {
-    if (value.empty()) return fallback;
+template <typename T>
+bool Integer(const std::string& text, T* output) {
     try {
-        return std::stoi(value);
+        size_t used = 0;
+        const unsigned long long value = std::stoull(text, &used);
+        if (used != text.size()) return false;
+        *output = static_cast<T>(value);
+        return static_cast<unsigned long long>(*output) == value;
     } catch (...) {
-        return fallback;
+        return false;
     }
 }
 
-std::size_t SafeSize(const std::string& value, std::size_t fallback) {
-    if (value.empty()) return fallback;
-    try {
-        return static_cast<std::size_t>(std::stoull(value));
-    } catch (...) {
-        return fallback;
+bool Sha256(const std::string& value) {
+    if (value.size() != 64) return false;
+    for (char character : value) {
+        if (!((character >= '0' && character <= '9') ||
+              (character >= 'a' && character <= 'f'))) {
+            return false;
+        }
     }
+    return true;
 }
 
 }  // namespace
 
 bool LoadModelDistributorConfig(const std::string& yaml_path,
-                                ModelDistributorConfig& out_config) {
+                                ModelDistributorConfig& output) {
     std::ifstream input(yaml_path);
     if (!input.is_open()) {
-        std::cerr << "[ModelDistributor] config not found, using defaults: "
+        std::cerr << "[ModelDistributor] required config not found: "
                   << yaml_path << std::endl;
-        out_config = ModelDistributorConfig{};
         return false;
     }
-
     std::ostringstream buffer;
     buffer << input.rdbuf();
-    const auto entries = ParseYaml(buffer.str());
-    out_config.listen_port =
-        SafeInt(FindValue(entries, "server", "listen_port"), 9200);
-    const std::string run_id = FindValue(entries, "server", "run_id");
-    if (!run_id.empty()) out_config.run_id = run_id;
-    out_config.protocol_version = static_cast<uint32_t>(
-        SafeInt(FindValue(entries, "server", "protocol_version"), 1));
-    const std::string artifact_root =
-        FindValue(entries, "model", "artifact_root");
-    if (!artifact_root.empty()) out_config.artifact_root = artifact_root;
-    out_config.chunk_bytes = SafeSize(
-        FindValue(entries, "model", "chunk_bytes"), 1024 * 1024);
-    const std::string contract_version =
-        FindValue(entries, "model", "contract_version");
-    if (!contract_version.empty()) {
-        out_config.contract_version = contract_version;
+    std::vector<Entry> entries;
+    std::string error;
+    if (!Parse(buffer.str(), &entries, &error)) {
+        std::cerr << "[ModelDistributor] invalid config: " << error
+                  << std::endl;
+        return false;
     }
-
-    const std::string env_port = Env("MAZE_MODEL_DISTRIBUTOR_PORT");
-    if (!env_port.empty()) {
-        out_config.listen_port = SafeInt(env_port, out_config.listen_port);
+    static const std::set<std::string> allowed = {
+        "server.listen_port",          "model.artifact_root",
+        "model.chunk_bytes",           "model.retention_steps",
+        "contract.package_name",       "contract.package_version",
+        "contract.source_digest",      "contract.artifact_digest",
+        "contract.platform",           "contract.generator_identity",
+    };
+    for (const auto& entry : entries) {
+        if (allowed.count(entry.section + "." + entry.key) == 0) {
+            std::cerr << "[ModelDistributor] unknown config key: "
+                      << entry.section << "." << entry.key << std::endl;
+            return false;
+        }
     }
-    const std::string env_run_id = Env("MAZE_RUN_ID");
-    if (!env_run_id.empty()) out_config.run_id = env_run_id;
-    const std::string env_root = Env("MAZE_MODEL_ARTIFACT_ROOT");
-    if (!env_root.empty()) out_config.artifact_root = env_root;
-    const std::string env_chunk = Env("MAZE_MODEL_CHUNK_BYTES");
-    if (!env_chunk.empty()) {
-        out_config.chunk_bytes = SafeSize(env_chunk, out_config.chunk_bytes);
+    const auto get = [&](const char* section,
+                         const char* key) -> const std::string* {
+        const std::string* value = Required(entries, section, key);
+        if (value == nullptr || value->empty()) {
+            std::cerr << "[ModelDistributor] missing or duplicate config key: "
+                      << section << "." << key << std::endl;
+            return nullptr;
+        }
+        return value;
+    };
+    const std::string* port = get("server", "listen_port");
+    const std::string* root = get("model", "artifact_root");
+    const std::string* chunk = get("model", "chunk_bytes");
+    const std::string* retention = get("model", "retention_steps");
+    const std::string* package = get("contract", "package_name");
+    const std::string* version = get("contract", "package_version");
+    const std::string* source = get("contract", "source_digest");
+    const std::string* artifact = get("contract", "artifact_digest");
+    const std::string* platform = get("contract", "platform");
+    const std::string* generator = get("contract", "generator_identity");
+    if (!port || !root || !chunk || !retention || !package || !version ||
+        !source || !artifact || !platform || !generator) {
+        return false;
     }
-
-    if (out_config.listen_port <= 0 || out_config.listen_port > 65535) {
-        out_config.listen_port = 9200;
+    ModelDistributorConfig parsed;
+    if (!Integer(*port, &parsed.listen_port) ||
+        !Integer(*chunk, &parsed.chunk_bytes) ||
+        !Integer(*retention, &parsed.retention_steps)) {
+        std::cerr << "[ModelDistributor] malformed numeric config value"
+                  << std::endl;
+        return false;
     }
-    if (out_config.chunk_bytes == 0 ||
-        out_config.chunk_bytes > 4 * 1024 * 1024) {
-        out_config.chunk_bytes = 1024 * 1024;
+    parsed.artifact_root = *root;
+    parsed.contract.package_name = *package;
+    parsed.contract.package_version = *version;
+    parsed.contract.source_digest = *source;
+    parsed.contract.artifact_digest = *artifact;
+    parsed.contract.platform = *platform;
+    parsed.contract.generator_identity = *generator;
+    if (parsed.listen_port <= 0 || parsed.listen_port > 65535 ||
+        parsed.artifact_root.empty() || parsed.chunk_bytes == 0 ||
+        parsed.chunk_bytes > 4 * 1024 * 1024 ||
+        parsed.retention_steps != 101 ||
+        parsed.contract.package_name != "rl-contracts" ||
+        parsed.contract.package_version != "0.14.0" ||
+        !Sha256(parsed.contract.source_digest) ||
+        !Sha256(parsed.contract.artifact_digest) ||
+        parsed.contract.platform.empty() ||
+        !Sha256(parsed.contract.generator_identity)) {
+        std::cerr << "[ModelDistributor] config violates locked ranges"
+                  << std::endl;
+        return false;
     }
+    if (const char* port_override = std::getenv("RL_MODEL_DISTRIBUTOR_PORT")) {
+        int value = 0;
+        if (!Integer(std::string(port_override), &value) || value <= 0 ||
+            value > 65535) {
+            std::cerr << "[ModelDistributor] RL_MODEL_DISTRIBUTOR_PORT invalid"
+                      << std::endl;
+            return false;
+        }
+        parsed.listen_port = value;
+    }
+    if (const char* root_override = std::getenv("RL_MODEL_ARTIFACT_ROOT")) {
+        if (*root_override == '\0') return false;
+        parsed.artifact_root = root_override;
+    }
+    if (parsed.artifact_root ==
+        "__DIRECT_ARTIFACT_ROOT_REQUIRED__") {
+        std::cerr << "[ModelDistributor] RL_MODEL_ARTIFACT_ROOT must bind "
+                     "the current isolated models/train directory"
+                  << std::endl;
+        return false;
+    }
+    output = parsed;
     return true;
 }

@@ -1,24 +1,66 @@
 # RL Model Distributor
 
-English | [简体中文](README.md)
+[简体中文](README.md) | English
 
-C++ model registration and download artifact repository, currently at version `0.2.0`. The generated ModelDistributor binary is used by the Learner image.
+## 1. Run tests
 
-## Build
-
-Build `rl-contracts` first, then run:
+Run inside the build container with the Contracts C++ bindings mounted:
 
 ```bash
+bash ./test.sh
+```
+
+`test.sh` is the repository's unified test entrypoint and runs the current
+development checks from an explicit allowlist.
+
+## 2. Build the 0.14.0 artifact
+
+Create the Contracts artifact first, then run the build from a clean Git savepoint:
+
+```bash
+(cd ../rl-contracts && bash build_artifact.sh)
 bash build_artifact.sh
 ```
 
-Output directory:
+The script compiles the service and runs its tests. Output:
 
 ```text
-../.workspace/artifacts/rl-model-distributor/0.2.0/<platform>/
+../.workspace/artifacts/rl-model-distributor/0.14.0/<platform>/
 ```
 
-Copy the artifact for the selected platform into `rl-learner/model-distributor/` before building the Learner image.
+## 3. Stage it into Learner
+
+Do not copy the binary manually. Use the Learner sync entry point:
+
+```bash
+(cd ../rl-learner && bash scripts/sync_runtime_artifacts.sh)
+```
+
+## 4. Validate a model manifest
+
+```bash
+python3 scripts/validate_manifest.py /path/to/manifest.json
+```
+
+Model paths must use:
+
+```text
+models/train/<step:min-width-7>/SaveModel.onnx
+```
+
+The 0.14 manifest schema v3 also binds the complete
+`RolloutEstimatorProfile`. Distributor validates profile, training semantics,
+lineage, step, and digests, but does not decide when individual AIServer Agents
+activate the model.
+
+## 5. Run it directly
+
+```bash
+# When build/maze_model_distributor already exists
+bash ./run.sh
+```
+
+During full training the Learner container supervises this process; no separate launch is required.
 
 ## License
 

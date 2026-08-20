@@ -15,8 +15,9 @@ if(NOT CONTRACT_CPP_DIR)
 endif()
 
 set(PROTO_SOURCES
-    ${CONTRACT_CPP_DIR}/maze.pb.cc
-    ${CONTRACT_CPP_DIR}/maze.grpc.pb.cc
+    ${CONTRACT_CPP_DIR}/common.pb.cc
+    ${CONTRACT_CPP_DIR}/training.pb.cc
+    ${CONTRACT_CPP_DIR}/training.grpc.pb.cc
 )
 
 set(SOURCES
@@ -42,43 +43,27 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 
 include(CTest)
 if(BUILD_TESTING)
-    add_executable(model_registry_test
-        tests/model_registry_test.cpp
-        src/config/config_loader.cpp
-        src/store/model_registry.cpp
-        ${CONTRACT_CPP_DIR}/maze.pb.cc
-    )
-    target_include_directories(model_registry_test PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-        ${CONTRACT_CPP_DIR}
-        ${Protobuf_INCLUDE_DIRS}
-    )
-    target_link_libraries(model_registry_test PRIVATE
-        OpenSSL::Crypto
-        protobuf::libprotobuf
-        pthread
-    )
-    add_test(NAME model_registry_contract COMMAND model_registry_test)
-
-    add_executable(model_distributor_rpc_test
+    add_executable(model_distributor_development_test
         tests/model_distributor_rpc_test.cpp
         src/config/config_loader.cpp
         src/grpc/model_distributor_service.cpp
         src/store/model_registry.cpp
         ${PROTO_SOURCES}
     )
-    target_include_directories(model_distributor_rpc_test PRIVATE
+    target_include_directories(model_distributor_development_test PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CONTRACT_CPP_DIR}
         ${Protobuf_INCLUDE_DIRS}
         ${GRPC_INCLUDE_DIRS}
     )
-    target_link_libraries(model_distributor_rpc_test PRIVATE
+    target_link_libraries(model_distributor_development_test PRIVATE
         OpenSSL::Crypto
         protobuf::libprotobuf
         ${GRPC_LIBRARIES}
         pthread
     )
-    add_test(NAME model_distributor_rpc_contract
-             COMMAND model_distributor_rpc_test)
+    add_test(
+        NAME model_distributor_development_contract
+        COMMAND model_distributor_development_test
+    )
 endif()
