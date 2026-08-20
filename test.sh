@@ -19,14 +19,14 @@ fi
 test_build_dir="$(mktemp -d "${TMPDIR:-/tmp}/rl-model-distributor-test.XXXXXX")"
 trap 'rm -rf "${test_build_dir}"' EXIT
 
-# TCR-A3-TEST-BOUNDARY-001: these two native contracts are the complete
-# approved suite. New targets or cases require a separately approved TCR.
+# TCR-A3-DEVELOPMENT-VALIDATION-008: this is the only approved
+# ModelDistributor development-validation case.
 cmake -S "${repo_dir}" -B "${test_build_dir}" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_TESTING=ON \
     -DCONTRACT_CPP_DIR="${contract_cpp_dir}"
 cmake --build "${test_build_dir}" --parallel \
-    --target model_registry_test model_distributor_rpc_test
+    --target model_distributor_development_test
 ctest --test-dir "${test_build_dir}" \
     --output-on-failure \
-    -R '^(model_registry_contract|model_distributor_rpc_contract)$'
+    -R '^model_distributor_development_contract$'

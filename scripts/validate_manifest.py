@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -10,10 +11,10 @@ from urllib.parse import unquote, urlparse
 SHA256 = re.compile(r"[a-f0-9]{64}")
 MAX_MODEL_STEP = (1 << 64) - 1
 CONTRACT_SOURCE_DIGEST = (
-    "1fc3866efe7e5869cc1a7ed4bc86d58f9c1abedafd7012b9f5dae08246ff145d"
+    "61d633bde1ad4a8dccc2a5e8505d122bbabc8c8cd69eb1cfa97b253c4c2d4c0d"
 )
 CONTRACT_ARTIFACT_DIGEST = (
-    "5ce9dff294e3cab466e2e0f058192f9715530645a41b45851b4d798e19a9a5a7"
+    "4642b1a7e18150f9dfc0b7dba6e6ff3b5f0173cb10dee4c432c0155bfa596779"
 )
 CONTRACT_GENERATOR_IDENTITY = (
     "0eb73fc2cb675bdb34bf3db9c99dae62a82f93a5e3a72db84dcf3936464729c8"
@@ -40,6 +41,74 @@ def require_schema(value: object, field: str) -> None:
     if not isinstance(value.get("schema_version"), int) or value["schema_version"] <= 0:
         raise ValueError(f"{field}.schema_version must be positive")
     require_digest(value.get("canonical_digest"), f"{field}.canonical_digest")
+
+
+def require_rollout_estimator_profile(value: object) -> None:
+    field = "rollout_estimator_profile"
+    if not isinstance(value, dict):
+        raise ValueError(f"{field} must be an object")
+    required = {
+        "profile_schema_version",
+        "gamma",
+        "gae_lambda",
+        "tmax",
+        "gae_formula_id",
+        "terminal_bootstrap_semantics_id",
+        "value_target_formula_id",
+        "value_head_abi_id",
+        "reward_semantics_digest",
+        "numeric_dtype",
+        "finite_rule_id",
+        "model_pin_semantics_id",
+        "profile_digest",
+    }
+    missing = required - value.keys()
+    unknown = value.keys() - required
+    if missing:
+        raise ValueError(f"{field} missing fields: {sorted(missing)}")
+    if unknown:
+        raise ValueError(f"{field} contains unknown fields: {sorted(unknown)}")
+    if value["profile_schema_version"] != 1:
+        raise ValueError(f"{field}.profile_schema_version must be 1")
+    for name in ("gamma", "gae_lambda"):
+        number = value[name]
+        if (
+            isinstance(number, bool)
+            or not isinstance(number, (int, float))
+            or not math.isfinite(number)
+            or number < 0.0
+            or number > 1.0
+        ):
+            raise ValueError(f"{field}.{name} must be finite in [0, 1]")
+    tmax = value["tmax"]
+    if (
+        isinstance(tmax, bool)
+        or not isinstance(tmax, int)
+        or tmax <= 0
+        or tmax > (1 << 32) - 1
+    ):
+        raise ValueError(f"{field}.tmax must be a positive uint32 integer")
+    expected = {
+        "gae_formula_id": "gae.backward.v1",
+        "terminal_bootstrap_semantics_id": (
+            "maze.timeout-keep-and-cut-bootstrap.v1"
+        ),
+        "value_target_formula_id": "advantage-plus-behavior-value.v1",
+        "value_head_abi_id": "scalar-value.float32.v1",
+        "numeric_dtype": "float32",
+        "finite_rule_id": "reject-nonfinite.v1",
+        "model_pin_semantics_id": "per-agent-segment-pin.v1",
+    }
+    for name, expected_value in expected.items():
+        if value[name] != expected_value:
+            raise ValueError(
+                f"{field}.{name} must be {expected_value!r}"
+            )
+    require_digest(
+        value["reward_semantics_digest"],
+        f"{field}.reward_semantics_digest",
+    )
+    require_digest(value["profile_digest"], f"{field}.profile_digest")
 
 
 def main() -> int:
@@ -69,6 +138,7 @@ def main() -> int:
         "trained_samples",
         "training_config_digest",
         "training_semantics",
+        "rollout_estimator_profile",
         "published_at_unix_ms",
         "ready",
     }
@@ -86,11 +156,11 @@ def main() -> int:
     unknown = data.keys() - allowed
     if unknown:
         raise ValueError(f"unknown fields are forbidden: {sorted(unknown)}")
-    if data["manifest_schema_version"] != 2:
-        raise ValueError("manifest_schema_version must be 2")
+    if data["manifest_schema_version"] != 3:
+        raise ValueError("manifest_schema_version must be 3")
     contract = data["contract"]
-    if not isinstance(contract, dict) or contract.get("package_name") != "rl-contracts" or contract.get("package_version") != "0.13.0":
-        raise ValueError("contract must identify rl-contracts 0.13.0")
+    if not isinstance(contract, dict) or contract.get("package_name") != "rl-contracts" or contract.get("package_version") != "0.14.0":
+        raise ValueError("contract must identify rl-contracts 0.14.0")
     require_digest(contract.get("source_digest"), "contract.source_digest")
     require_digest(contract.get("artifact_digest"), "contract.artifact_digest")
     require_digest(contract.get("generator_identity"), "contract.generator_identity")
@@ -101,7 +171,7 @@ def main() -> int:
         != CONTRACT_GENERATOR_IDENTITY
         or contract.get("platform") != "linux/arm64"
     ):
-        raise ValueError("contract identity does not match the selected 0.13.0 artifact")
+        raise ValueError("contract identity does not match the selected 0.14.0 artifact")
     identity = data["identity"]
     if not isinstance(identity, dict) or not identity.get("model_lineage_id"):
         raise ValueError("identity.model_lineage_id is required")
@@ -158,6 +228,15 @@ def main() -> int:
         or not semantics.get("policy_distribution_schema_id")
     ):
         raise ValueError("training_semantics does not match the model contract")
+    require_rollout_estimator_profile(data["rollout_estimator_profile"])
+    if (
+        data["rollout_estimator_profile"]["reward_semantics_digest"]
+        != semantics["reward_schema"]["canonical_digest"]
+    ):
+        raise ValueError(
+            "rollout_estimator_profile reward identity does not match "
+            "training_semantics"
+        )
     for field in ("input_shape", "action_shape", "value_shape"):
         shape = data[field]
         if not isinstance(shape, list) or not shape or any(

@@ -189,7 +189,7 @@ bool LoadModelDistributorConfig(const std::string& yaml_path,
         parsed.chunk_bytes > 4 * 1024 * 1024 ||
         parsed.retention_steps != 101 ||
         parsed.contract.package_name != "rl-contracts" ||
-        parsed.contract.package_version != "0.13.0" ||
+        parsed.contract.package_version != "0.14.0" ||
         !Sha256(parsed.contract.source_digest) ||
         !Sha256(parsed.contract.artifact_digest) ||
         parsed.contract.platform.empty() ||

@@ -8,6 +8,7 @@
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <fcntl.h>
 #include <fstream>
 #include <iomanip>
@@ -58,6 +59,48 @@ bool ValidSemantics(
            !semantics.policy_distribution_schema_id().empty() &&
            !semantics.model_architecture_id().empty() &&
            LowerSha256(semantics.semantics_digest());
+}
+
+bool Sha256Bytes(const void* data,
+                 size_t size,
+                 std::string* checksum,
+                 std::string* error);
+
+bool ValidRolloutEstimatorProfile(
+    const rl::training::v1::RolloutEstimatorProfile& profile) {
+    if (profile.profile_schema_version() != 1 ||
+        !std::isfinite(profile.gamma()) || profile.gamma() < 0.0 ||
+        profile.gamma() > 1.0 ||
+        !std::isfinite(profile.gae_lambda()) ||
+        profile.gae_lambda() < 0.0 || profile.gae_lambda() > 1.0 ||
+        profile.tmax() == 0 ||
+        profile.gae_formula_id() != "gae.backward.v1" ||
+        profile.terminal_bootstrap_semantics_id() !=
+            "maze.timeout-keep-and-cut-bootstrap.v1" ||
+        profile.value_target_formula_id() !=
+            "advantage-plus-behavior-value.v1" ||
+        profile.value_head_abi_id() != "scalar-value.float32.v1" ||
+        profile.numeric_dtype() != "float32" ||
+        profile.finite_rule_id() != "reject-nonfinite.v1" ||
+        profile.model_pin_semantics_id() != "per-agent-segment-pin.v1" ||
+        !LowerSha256(profile.reward_semantics_digest()) ||
+        !LowerSha256(profile.profile_digest())) {
+        return false;
+    }
+    rl::training::v1::RolloutEstimatorProfile canonical(profile);
+    canonical.clear_profile_digest();
+    std::string payload;
+    google::protobuf::io::StringOutputStream output(&payload);
+    google::protobuf::io::CodedOutputStream coded(&output);
+    coded.SetSerializationDeterministic(true);
+    if (!canonical.SerializeToCodedStream(&coded) || coded.HadError()) {
+        return false;
+    }
+    coded.Trim();
+    std::string digest;
+    std::string error;
+    return Sha256Bytes(payload.data(), payload.size(), &digest, &error) &&
+           digest == profile.profile_digest().hex();
 }
 
 std::filesystem::path FileUriPath(const std::string& uri) {
@@ -296,7 +339,7 @@ bool ModelRegistry::ValidateManifest(
     const rl::training::v1::ModelArtifactManifest& manifest,
     std::filesystem::path* model_path,
     std::string* error) const {
-    if (manifest.manifest_schema_version() != 2) {
+    if (manifest.manifest_schema_version() != 3) {
         *error = "unsupported manifest schema version";
         return false;
     }
@@ -317,6 +360,15 @@ bool ModelRegistry::ValidateManifest(
         !ValidShape(manifest.value_shape()) ||
         !LowerSha256(manifest.training_config_digest()) ||
         !ValidSemantics(manifest.training_semantics()) ||
+        !ValidRolloutEstimatorProfile(
+            manifest.rollout_estimator_profile()) ||
+        manifest.rollout_estimator_profile()
+                .reward_semantics_digest()
+                .SerializeAsString() !=
+            manifest.training_semantics()
+                .reward_schema()
+                .canonical_digest()
+                .SerializeAsString() ||
         manifest.training_semantics().observation_schema().SerializeAsString() !=
             manifest.observation_schema().SerializeAsString() ||
         manifest.training_semantics().action_schema().SerializeAsString() !=

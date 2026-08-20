@@ -10,9 +10,10 @@ Run inside the build container with the Contracts C++ bindings mounted:
 bash ./test.sh
 ```
 
-`test.sh` is the repository's only public test entrypoint. Adding or expanding tests requires a user-approved TCR first.
+`test.sh` is the repository's unified test entrypoint and runs the current
+development checks from an explicit allowlist.
 
-## 2. Build the 0.13.0 artifact
+## 2. Build the 0.14.0 artifact
 
 Create the Contracts artifact first, then run the build from a clean Git savepoint:
 
@@ -24,7 +25,7 @@ bash build_artifact.sh
 The script compiles the service and runs its tests. Output:
 
 ```text
-../.workspace/artifacts/rl-model-distributor/0.13.0/<platform>/
+../.workspace/artifacts/rl-model-distributor/0.14.0/<platform>/
 ```
 
 ## 3. Stage it into Learner
@@ -47,10 +48,16 @@ Model paths must use:
 models/train/<step:min-width-7>/SaveModel.onnx
 ```
 
+The 0.14 manifest schema v3 also binds the complete
+`RolloutEstimatorProfile`. Distributor validates profile, training semantics,
+lineage, step, and digests, but does not decide when individual AIServer Agents
+activate the model.
+
 ## 5. Run it directly
 
 ```bash
-./maze_model_distributor configs/model_distributor_config.yaml
+# When build/maze_model_distributor already exists
+bash ./run.sh
 ```
 
 During full training the Learner container supervises this process; no separate launch is required.
