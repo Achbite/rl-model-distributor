@@ -12,7 +12,7 @@ bash ./test.sh
 
 `test.sh` 是本仓库的统一测试入口，并按显式清单运行当前开发校验。
 
-## 2. 构建 0.14.0 制品
+## 2. 构建 0.15.0 制品
 
 先生成 Contracts 制品，再从 clean Git 保存点执行：
 
@@ -24,7 +24,7 @@ bash build_artifact.sh
 构建脚本会编译并运行测试。输出：
 
 ```text
-../.workspace/artifacts/rl-model-distributor/0.14.0/<platform>/
+../.workspace/artifacts/rl-model-distributor/0.15.0/<platform>/
 ```
 
 ## 3. 装配到 Learner
@@ -35,11 +35,7 @@ bash build_artifact.sh
 (cd ../rl-learner && bash scripts/sync_runtime_artifacts.sh)
 ```
 
-## 4. 校验模型 manifest
-
-```bash
-python3 scripts/validate_manifest.py /path/to/manifest.json
-```
+## 4. 模型 manifest
 
 模型路径必须使用：
 
@@ -47,8 +43,9 @@ python3 scripts/validate_manifest.py /path/to/manifest.json
 models/train/<step:min-width-7>/SaveModel.onnx
 ```
 
-0.14 manifest schema v3 还必须绑定完整 `RolloutEstimatorProfile`；Distributor 校验 profile、
-训练语义、lineage、step 与 digest，但不决定 AIServer 中各 Agent 的激活时机。
+`manifest.pb` 是唯一权威模型 manifest。Distributor 在 `RegisterModel` 边界直接校验
+确定性 protobuf、训练合同摘要、profile、lineage、step 与 digest，但不决定 AIServer
+中各 Agent 的激活时机。
 
 ## 5. 单独运行
 

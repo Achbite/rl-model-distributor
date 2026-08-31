@@ -80,6 +80,8 @@ void TestRegisterManifestDownloadAck() {
 
     rl::training::v1::RegisterModelReq register_request;
     *register_request.mutable_manifest() = manifest;
+    Contract(register_request.mutable_contract());
+    register_request.set_local_artifact_path(model_path.string());
     rl::training::v1::RegisterModelRsp register_response;
     grpc::ClientContext register_context;
     const grpc::Status register_status = stub->RegisterModel(
@@ -99,7 +101,9 @@ void TestRegisterManifestDownloadAck() {
     grpc::ClientContext manifest_context;
     const grpc::Status manifest_status = stub->GetModelManifest(
         &manifest_context, manifest_request, &manifest_response);
-    Require(manifest_status.ok() && manifest_response.ret_code() == 0 &&
+    Require(manifest_status.ok() &&
+                manifest_response.result() ==
+                    rl::training::v1::MODEL_LOOKUP_RESULT_FOUND &&
                 manifest_response.manifest().identity().SerializeAsString() ==
                     manifest.identity().SerializeAsString() &&
                 manifest_response.manifest().identity().artifact_digest().hex() ==

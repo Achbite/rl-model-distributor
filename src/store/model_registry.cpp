@@ -39,28 +39,6 @@ bool LowerSha256(const rl::common::v1::ContentDigest& digest) {
     return true;
 }
 
-bool ValidShape(const google::protobuf::RepeatedField<int64_t>& shape) {
-    return !shape.empty() &&
-           std::all_of(shape.begin(), shape.end(),
-                       [](int64_t value) { return value > 0; });
-}
-
-bool ValidSchema(const rl::common::v1::SchemaIdentity& schema) {
-    return !schema.schema_id().empty() && schema.schema_version() > 0 &&
-           LowerSha256(schema.canonical_digest());
-}
-
-bool ValidSemantics(
-    const rl::training::v1::TrainingSemanticsIdentity& semantics) {
-    return !semantics.training_contract_id().empty() &&
-           ValidSchema(semantics.observation_schema()) &&
-           ValidSchema(semantics.action_schema()) &&
-           ValidSchema(semantics.reward_schema()) &&
-           !semantics.policy_distribution_schema_id().empty() &&
-           !semantics.model_architecture_id().empty() &&
-           LowerSha256(semantics.semantics_digest());
-}
-
 bool Sha256Bytes(const void* data,
                  size_t size,
                  std::string* checksum,
@@ -68,22 +46,11 @@ bool Sha256Bytes(const void* data,
 
 bool ValidRolloutEstimatorProfile(
     const rl::training::v1::RolloutEstimatorProfile& profile) {
-    if (profile.profile_schema_version() != 1 ||
-        !std::isfinite(profile.gamma()) || profile.gamma() < 0.0 ||
+    if (!std::isfinite(profile.gamma()) || profile.gamma() < 0.0 ||
         profile.gamma() > 1.0 ||
         !std::isfinite(profile.gae_lambda()) ||
         profile.gae_lambda() < 0.0 || profile.gae_lambda() > 1.0 ||
         profile.tmax() == 0 ||
-        profile.gae_formula_id() != "gae.backward.v1" ||
-        profile.terminal_bootstrap_semantics_id() !=
-            "maze.timeout-keep-and-cut-bootstrap.v1" ||
-        profile.value_target_formula_id() !=
-            "advantage-plus-behavior-value.v1" ||
-        profile.value_head_abi_id() != "scalar-value.float32.v1" ||
-        profile.numeric_dtype() != "float32" ||
-        profile.finite_rule_id() != "reject-nonfinite.v1" ||
-        profile.model_pin_semantics_id() != "per-agent-segment-pin.v1" ||
-        !LowerSha256(profile.reward_semantics_digest()) ||
         !LowerSha256(profile.profile_digest())) {
         return false;
     }
@@ -101,12 +68,6 @@ bool ValidRolloutEstimatorProfile(
     std::string error;
     return Sha256Bytes(payload.data(), payload.size(), &digest, &error) &&
            digest == profile.profile_digest().hex();
-}
-
-std::filesystem::path FileUriPath(const std::string& uri) {
-    constexpr const char* prefix = "file://";
-    if (uri.rfind(prefix, 0) != 0) return {};
-    return std::filesystem::path(uri.substr(7));
 }
 
 bool IsWithin(const std::filesystem::path& child,
@@ -337,54 +298,28 @@ void ModelRegistry::FillDistributorIdentity(
 
 bool ModelRegistry::ValidateManifest(
     const rl::training::v1::ModelArtifactManifest& manifest,
+    const rl::common::v1::ContractIdentity& contract,
+    const std::string& local_artifact_path,
     std::filesystem::path* model_path,
     std::string* error) const {
-    if (manifest.manifest_schema_version() != 3) {
-        *error = "unsupported manifest schema version";
+    if (!ContractMatches(contract)) {
+        *error = "registration contract identity does not match service artifact";
         return false;
     }
-    if (!ContractMatches(manifest.contract())) {
-        *error = "manifest contract identity does not match service artifact";
+    if (!ModelIdentityValid(manifest.identity())) {
+        *error = "model identity is invalid";
         return false;
     }
-    if (!ModelIdentityValid(manifest.identity()) || !manifest.ready()) {
-        *error = "model identity or ready state is invalid";
-        return false;
-    }
-    if (!ValidSchema(manifest.observation_schema()) ||
-        !ValidSchema(manifest.action_schema()) ||
-        manifest.model_architecture_id().empty() ||
-        manifest.tensor_dtype().empty() ||
-        !ValidShape(manifest.input_shape()) ||
-        !ValidShape(manifest.action_shape()) ||
-        !ValidShape(manifest.value_shape()) ||
-        !LowerSha256(manifest.training_config_digest()) ||
-        !ValidSemantics(manifest.training_semantics()) ||
+    // The training-contract digest owns ABI and rollout semantics. AIServer
+    // validates the actual ONNX dtype and shapes when it prepares the bytes.
+    if (!LowerSha256(manifest.training_config_digest()) ||
+        !LowerSha256(manifest.training_contract_digest()) ||
+        manifest.training_contract_digest().hex() !=
+            config_.training_contract_digest ||
         !ValidRolloutEstimatorProfile(
             manifest.rollout_estimator_profile()) ||
-        manifest.rollout_estimator_profile()
-                .reward_semantics_digest()
-                .SerializeAsString() !=
-            manifest.training_semantics()
-                .reward_schema()
-                .canonical_digest()
-                .SerializeAsString() ||
-        manifest.training_semantics().observation_schema().SerializeAsString() !=
-            manifest.observation_schema().SerializeAsString() ||
-        manifest.training_semantics().action_schema().SerializeAsString() !=
-            manifest.action_schema().SerializeAsString() ||
-        manifest.training_semantics().model_architecture_id() !=
-            manifest.model_architecture_id() ||
-        manifest.identity().model_step() != manifest.train_updates() ||
-        manifest.published_at_unix_ms() <= 0) {
-        *error = "manifest schema, shape, or training identity is invalid";
-        return false;
-    }
-    if (manifest.model_file() != "SaveModel.onnx" ||
-        std::filesystem::path(manifest.model_file()).filename() !=
-            std::filesystem::path(manifest.model_file()) ||
-        manifest.size_bytes() <= 0) {
-        *error = "manifest model file identity is invalid";
+        manifest.size_bytes() <= 0 || manifest.published_at_unix_ms() <= 0) {
+        *error = "manifest training identity or artifact metadata is invalid";
         return false;
     }
     std::string computed_manifest_digest;
@@ -394,10 +329,9 @@ bool ModelRegistry::ValidateManifest(
         return false;
     }
 
-    const std::filesystem::path requested =
-        FileUriPath(manifest.artifact_uri());
-    if (requested.empty()) {
-        *error = "artifact_uri must use file://";
+    const std::filesystem::path requested(local_artifact_path);
+    if (requested.empty() || !requested.is_absolute()) {
+        *error = "local_artifact_path must be absolute";
         return false;
     }
     std::error_code canonical_error;
@@ -415,7 +349,7 @@ bool ModelRegistry::ValidateManifest(
         *error = "artifact path is outside configured root";
         return false;
     }
-    if (canonical.filename() != manifest.model_file() ||
+    if (canonical.filename() != "SaveModel.onnx" ||
         canonical.parent_path().parent_path() != artifact_root_ ||
         canonical.parent_path().filename() !=
             StepDirectoryName(manifest.identity().model_step()) ||
@@ -442,11 +376,14 @@ bool ModelRegistry::ValidateManifest(
 
 rl::training::v1::ModelRegisterResult ModelRegistry::Register(
     const rl::training::v1::ModelArtifactManifest& manifest,
+    const rl::common::v1::ContractIdentity& contract,
+    const std::string& local_artifact_path,
     RegisteredModel* registered,
     std::string* message) {
     std::filesystem::path path;
     std::string error;
-    if (!ValidateManifest(manifest, &path, &error)) {
+    if (!ValidateManifest(manifest, contract, local_artifact_path,
+                          &path, &error)) {
         std::lock_guard<std::mutex> lock(mutex_);
         ++register_attempt_count_;
         ++rejected_register_count_;

@@ -137,6 +137,7 @@ bool LoadModelDistributorConfig(const std::string& yaml_path,
         "contract.package_name",       "contract.package_version",
         "contract.source_digest",      "contract.artifact_digest",
         "contract.platform",           "contract.generator_identity",
+        "contract.training_contract_digest",
     };
     for (const auto& entry : entries) {
         if (allowed.count(entry.section + "." + entry.key) == 0) {
@@ -165,8 +166,11 @@ bool LoadModelDistributorConfig(const std::string& yaml_path,
     const std::string* artifact = get("contract", "artifact_digest");
     const std::string* platform = get("contract", "platform");
     const std::string* generator = get("contract", "generator_identity");
+    const std::string* training_contract =
+        get("contract", "training_contract_digest");
     if (!port || !root || !chunk || !retention || !package || !version ||
-        !source || !artifact || !platform || !generator) {
+        !source || !artifact || !platform || !generator ||
+        !training_contract) {
         return false;
     }
     ModelDistributorConfig parsed;
@@ -184,16 +188,18 @@ bool LoadModelDistributorConfig(const std::string& yaml_path,
     parsed.contract.artifact_digest = *artifact;
     parsed.contract.platform = *platform;
     parsed.contract.generator_identity = *generator;
+    parsed.training_contract_digest = *training_contract;
     if (parsed.listen_port <= 0 || parsed.listen_port > 65535 ||
         parsed.artifact_root.empty() || parsed.chunk_bytes == 0 ||
         parsed.chunk_bytes > 4 * 1024 * 1024 ||
         parsed.retention_steps != 101 ||
         parsed.contract.package_name != "rl-contracts" ||
-        parsed.contract.package_version != "0.14.0" ||
+        parsed.contract.package_version != "0.15.0" ||
         !Sha256(parsed.contract.source_digest) ||
         !Sha256(parsed.contract.artifact_digest) ||
         parsed.contract.platform.empty() ||
-        !Sha256(parsed.contract.generator_identity)) {
+        !Sha256(parsed.contract.generator_identity) ||
+        !Sha256(parsed.training_contract_digest)) {
         std::cerr << "[ModelDistributor] config violates locked ranges"
                   << std::endl;
         return false;
