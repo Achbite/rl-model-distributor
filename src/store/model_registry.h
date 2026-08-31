@@ -36,6 +36,8 @@ public:
 
     rl::training::v1::ModelRegisterResult Register(
         const rl::training::v1::ModelArtifactManifest& manifest,
+        const rl::common::v1::ContractIdentity& contract,
+        const std::string& local_artifact_path,
         RegisteredModel* registered,
         std::string* message);
     bool Get(const rl::training::v1::ModelIdentity& identity,
@@ -98,6 +100,8 @@ private:
         rl::common::v1::ContractIdentity* identity) const;
     bool ValidateManifest(
         const rl::training::v1::ModelArtifactManifest& manifest,
+        const rl::common::v1::ContractIdentity& contract,
+        const std::string& local_artifact_path,
         std::filesystem::path* model_path,
         std::string* error) const;
     static std::string AckKey(const rl::training::v1::AckModelReq& request);

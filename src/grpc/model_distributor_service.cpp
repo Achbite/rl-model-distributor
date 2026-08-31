@@ -15,7 +15,6 @@ grpc::Status ModelDistributorServiceImpl::RegisterModel(
     rl::training::v1::RegisterModelRsp* response) {
     registry_.FillDistributorIdentity(response->mutable_distributor());
     if (!request->has_manifest()) {
-        response->set_ret_code(-1);
         response->set_result(
             rl::training::v1::MODEL_REGISTER_RESULT_REJECTED_INVALID);
         response->set_message("manifest is required");
@@ -23,17 +22,14 @@ grpc::Status ModelDistributorServiceImpl::RegisterModel(
     }
     RegisteredModel record;
     std::string message;
-    const auto result =
-        registry_.Register(request->manifest(), &record, &message);
-    response->set_ret_code(
-        result == rl::training::v1::MODEL_REGISTER_RESULT_REGISTERED ||
-                result ==
-                    rl::training::v1::MODEL_REGISTER_RESULT_ALREADY_REGISTERED
-            ? 0
-            : -1);
+    const auto result = registry_.Register(
+        request->manifest(), request->contract(),
+        request->local_artifact_path(), &record, &message);
     response->set_result(result);
     response->set_message(message);
-    if (response->ret_code() == 0) {
+    if (result == rl::training::v1::MODEL_REGISTER_RESULT_REGISTERED ||
+        result ==
+            rl::training::v1::MODEL_REGISTER_RESULT_ALREADY_REGISTERED) {
         *response->mutable_manifest() = record.manifest;
     }
     return grpc::Status::OK;
@@ -44,9 +40,20 @@ grpc::Status ModelDistributorServiceImpl::GetModelManifest(
     const rl::training::v1::GetModelManifestReq* request,
     rl::training::v1::GetModelManifestRsp* response) {
     registry_.FillDistributorIdentity(response->mutable_distributor());
-    if (!ModelRegistry::ServiceIdentityValid(request->requester())) {
-        response->set_ret_code(-1);
-        response->set_message("requester service identity is invalid");
+    const auto& selector = request->requested_model();
+    const bool has_artifact_digest =
+        !selector.artifact_digest().hex().empty();
+    const bool has_manifest_digest =
+        !selector.manifest_digest().hex().empty();
+    if (!ModelRegistry::ServiceIdentityValid(request->requester()) ||
+        selector.model_lineage_id().empty() ||
+        (!request->latest_in_lineage() && !selector.has_model_step()) ||
+        has_artifact_digest != has_manifest_digest ||
+        (has_artifact_digest &&
+         !ModelRegistry::ModelIdentityValid(selector))) {
+        response->set_result(
+            rl::training::v1::MODEL_LOOKUP_RESULT_REJECTED_IDENTITY);
+        response->set_message("model lookup identity is invalid");
         return grpc::Status::OK;
     }
     RegisteredModel record;
@@ -57,11 +64,12 @@ grpc::Status ModelDistributorServiceImpl::GetModelManifest(
         request->requested_model(), request->latest_in_lineage(), &record,
         &floor, &latest, &message);
     if (!found) {
-        response->set_ret_code(-1);
+        response->set_result(
+            rl::training::v1::MODEL_LOOKUP_RESULT_NOT_FOUND);
         response->set_message(message);
         return grpc::Status::OK;
     }
-    response->set_ret_code(0);
+    response->set_result(rl::training::v1::MODEL_LOOKUP_RESULT_FOUND);
     response->set_message(message);
     *response->mutable_manifest() = record.manifest;
     response->set_available_floor_model_step(floor);
@@ -133,11 +141,6 @@ grpc::Status ModelDistributorServiceImpl::AckModel(
     registry_.FillDistributorIdentity(response->mutable_distributor());
     std::string message;
     const auto result = registry_.Ack(*request, &message);
-    response->set_ret_code(
-        result == rl::training::v1::MODEL_ACK_RESULT_APPLIED ||
-                result == rl::training::v1::MODEL_ACK_RESULT_ALREADY_APPLIED
-            ? 0
-            : -1);
     response->set_result(result);
     response->set_message(message);
     return grpc::Status::OK;

@@ -17,6 +17,7 @@ struct ModelDistributorConfig {
     std::string artifact_root;
     std::size_t chunk_bytes = 1024 * 1024;
     std::size_t retention_steps = 101;
+    std::string training_contract_digest;
     ContractConfig contract;
 };
 
