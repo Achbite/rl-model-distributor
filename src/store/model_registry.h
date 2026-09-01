@@ -107,9 +107,6 @@ private:
     static std::string AckKey(const rl::training::v1::AckModelReq& request);
     static std::string ServiceKey(
         const rl::common::v1::ServiceInstanceIdentity& service);
-    static std::string DownloadKey(
-        const rl::common::v1::ServiceInstanceIdentity& service,
-        const rl::training::v1::ModelIdentity& model);
     static bool AckEquivalent(const rl::training::v1::AckModelReq& left,
                               const rl::training::v1::AckModelReq& right);
     bool AvailableRangeLocked(const std::string& lineage_id,
@@ -124,8 +121,6 @@ private:
     mutable std::mutex mutex_;
     std::map<ModelKey, RegisteredModel> models_;
     std::map<std::string, uint64_t> latest_step_seen_;
-    std::map<std::string, rl::training::v1::ModelIdentity>
-        completed_downloads_;
     std::map<std::string, rl::training::v1::AckModelReq> acknowledgements_;
     std::map<std::string, ModelKey> acknowledgement_models_;
     bool has_latest_model_ = false;

@@ -8,7 +8,6 @@
 #include <array>
 #include <cerrno>
 #include <chrono>
-#include <cmath>
 #include <fcntl.h>
 #include <fstream>
 #include <iomanip>
@@ -43,32 +42,6 @@ bool Sha256Bytes(const void* data,
                  size_t size,
                  std::string* checksum,
                  std::string* error);
-
-bool ValidRolloutEstimatorProfile(
-    const rl::training::v1::RolloutEstimatorProfile& profile) {
-    if (!std::isfinite(profile.gamma()) || profile.gamma() < 0.0 ||
-        profile.gamma() > 1.0 ||
-        !std::isfinite(profile.gae_lambda()) ||
-        profile.gae_lambda() < 0.0 || profile.gae_lambda() > 1.0 ||
-        profile.tmax() == 0 ||
-        !LowerSha256(profile.profile_digest())) {
-        return false;
-    }
-    rl::training::v1::RolloutEstimatorProfile canonical(profile);
-    canonical.clear_profile_digest();
-    std::string payload;
-    google::protobuf::io::StringOutputStream output(&payload);
-    google::protobuf::io::CodedOutputStream coded(&output);
-    coded.SetSerializationDeterministic(true);
-    if (!canonical.SerializeToCodedStream(&coded) || coded.HadError()) {
-        return false;
-    }
-    coded.Trim();
-    std::string digest;
-    std::string error;
-    return Sha256Bytes(payload.data(), payload.size(), &digest, &error) &&
-           digest == profile.profile_digest().hex();
-}
 
 bool IsWithin(const std::filesystem::path& child,
               const std::filesystem::path& parent) {
@@ -154,12 +127,6 @@ bool ComputeSha256Descriptor(int descriptor,
     }
     *checksum = output.str();
     return true;
-}
-
-std::string StepDirectoryName(uint64_t step) {
-    std::ostringstream output;
-    output << std::setfill('0') << std::setw(7) << step;
-    return output.str();
 }
 
 }  // namespace
@@ -265,28 +232,14 @@ bool ModelRegistry::ModelIdentityValid(
 bool ModelRegistry::ContractMatches(
     const rl::common::v1::ContractIdentity& contract) const {
     return contract.package_name() == config_.contract.package_name &&
-           contract.package_version() == config_.contract.package_version &&
-           LowerSha256(contract.source_digest()) &&
-           contract.source_digest().hex() == config_.contract.source_digest &&
-           LowerSha256(contract.artifact_digest()) &&
-           contract.artifact_digest().hex() == config_.contract.artifact_digest &&
-           contract.platform() == config_.contract.platform &&
-           contract.generator_identity() == config_.contract.generator_identity;
+           contract.package_version() == config_.contract.package_version;
 }
 
 void ModelRegistry::FillContractIdentity(
     rl::common::v1::ContractIdentity* contract) const {
     contract->set_package_name(config_.contract.package_name);
     contract->set_package_version(config_.contract.package_version);
-    contract->mutable_source_digest()->set_algorithm(
-        rl::common::v1::DIGEST_ALGORITHM_SHA256);
-    contract->mutable_source_digest()->set_hex(config_.contract.source_digest);
-    contract->mutable_artifact_digest()->set_algorithm(
-        rl::common::v1::DIGEST_ALGORITHM_SHA256);
-    contract->mutable_artifact_digest()->set_hex(
-        config_.contract.artifact_digest);
     contract->set_platform(config_.contract.platform);
-    contract->set_generator_identity(config_.contract.generator_identity);
 }
 
 void ModelRegistry::FillDistributorIdentity(
@@ -310,16 +263,11 @@ bool ModelRegistry::ValidateManifest(
         *error = "model identity is invalid";
         return false;
     }
-    // The training-contract digest owns ABI and rollout semantics. AIServer
-    // validates the actual ONNX dtype and shapes when it prepares the bytes.
-    if (!LowerSha256(manifest.training_config_digest()) ||
-        !LowerSha256(manifest.training_contract_digest()) ||
-        manifest.training_contract_digest().hex() !=
-            config_.training_contract_digest ||
-        !ValidRolloutEstimatorProfile(
-            manifest.rollout_estimator_profile()) ||
-        manifest.size_bytes() <= 0 || manifest.published_at_unix_ms() <= 0) {
-        *error = "manifest training identity or artifact metadata is invalid";
+    // Training configuration and rollout estimator fields are opaque
+    // provenance to the distributor. Its boundary owns the published model
+    // identity, manifest bytes, artifact size and artifact bytes.
+    if (manifest.size_bytes() <= 0 || manifest.published_at_unix_ms() <= 0) {
+        *error = "manifest artifact metadata is invalid";
         return false;
     }
     std::string computed_manifest_digest;
@@ -349,12 +297,8 @@ bool ModelRegistry::ValidateManifest(
         *error = "artifact path is outside configured root";
         return false;
     }
-    if (canonical.filename() != "SaveModel.onnx" ||
-        canonical.parent_path().parent_path() != artifact_root_ ||
-        canonical.parent_path().filename() !=
-            StepDirectoryName(manifest.identity().model_step()) ||
-        !std::filesystem::is_regular_file(canonical)) {
-        *error = "artifact file does not exist or has a mismatched name";
+    if (!std::filesystem::is_regular_file(canonical)) {
+        *error = "artifact file does not exist";
         return false;
     }
     const uintmax_t size = std::filesystem::file_size(canonical, canonical_error);
@@ -635,19 +579,14 @@ bool ModelRegistry::GetManifestSnapshot(
 
 std::string ModelRegistry::AckKey(
     const rl::training::v1::AckModelReq& request) {
-    return DownloadKey(request.aiserver(), request.model());
+    return ServiceKey(request.aiserver()) + "\x1e" +
+           request.load_instance_id();
 }
 
 std::string ModelRegistry::ServiceKey(
     const rl::common::v1::ServiceInstanceIdentity& service) {
     return service.component() + "\x1f" + service.instance_id() + "\x1f" +
            std::to_string(service.lifecycle_epoch());
-}
-
-std::string ModelRegistry::DownloadKey(
-    const rl::common::v1::ServiceInstanceIdentity& service,
-    const rl::training::v1::ModelIdentity& model) {
-    return ServiceKey(service) + "\x1e" + model.SerializeAsString();
 }
 
 bool ModelRegistry::AckEquivalent(
@@ -680,14 +619,13 @@ rl::training::v1::ModelAckResult ModelRegistry::Ack(
         *message = last_error_;
         return rl::training::v1::MODEL_ACK_RESULT_REJECTED;
     }
-    const auto completed = completed_downloads_.find(
-        DownloadKey(request.aiserver(), request.model()));
-    const bool completed_download_identity =
-        completed != completed_downloads_.end() &&
-        completed->second.SerializeAsString() ==
-            request.model().SerializeAsString();
-    if (!completed_download_identity) {
-        last_error_ = "completed model download fact not found";
+    const ModelKey model_key{request.model().model_lineage_id(),
+                             request.model().model_step()};
+    const auto registered = models_.find(model_key);
+    if (registered == models_.end() ||
+        registered->second.manifest.identity().SerializeAsString() !=
+            request.model().SerializeAsString()) {
+        last_error_ = "registered model identity not found";
         *message = last_error_;
         return rl::training::v1::MODEL_ACK_RESULT_NOT_FOUND;
     }
@@ -696,7 +634,6 @@ rl::training::v1::ModelAckResult ModelRegistry::Ack(
         key,
         ModelKey{request.model().model_lineage_id(),
                  request.model().model_step()});
-    if (completed_download_identity) completed_downloads_.erase(completed);
     latest_ack_aiserver_ = request.aiserver();
     latest_ack_model_ = request.model();
     latest_ack_status_ = request.load_status();
@@ -730,16 +667,6 @@ void ModelRegistry::PruneSettlementFactsLocked(
         acknowledgements_.erase(iterator->first);
         iterator = acknowledgement_models_.erase(iterator);
     }
-    for (auto iterator = completed_downloads_.begin();
-         iterator != completed_downloads_.end();) {
-        const auto& model = iterator->second;
-        const ModelKey key{model.model_lineage_id(), model.model_step()};
-        if (outside_retention(key)) {
-            iterator = completed_downloads_.erase(iterator);
-        } else {
-            ++iterator;
-        }
-    }
 }
 
 void ModelRegistry::RecordDownloadAttempt() {
@@ -751,13 +678,11 @@ void ModelRegistry::RecordDownloadSuccess(
     const rl::common::v1::ServiceInstanceIdentity& requester,
     const rl::training::v1::ModelIdentity& model,
     int64_t bytes) {
+    (void)requester;
+    (void)model;
     std::lock_guard<std::mutex> lock(mutex_);
     ++download_success_count_;
     bytes_served_ += bytes;
-    // A stream may finish after its registry entry was evicted. RegisterModel
-    // prunes old settlement facts on every publication, while this exact fact
-    // lets that already-open stream complete one idempotent model-level ACK.
-    completed_downloads_[DownloadKey(requester, model)] = model;
 }
 
 void ModelRegistry::RecordDownloadFailure(const std::string& error) {

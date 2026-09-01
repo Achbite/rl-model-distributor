@@ -11,12 +11,6 @@
 
 namespace test_helpers {
 
-constexpr char kSourceDigest[] =
-    "1111111111111111111111111111111111111111111111111111111111111111";
-constexpr char kContractArtifactDigest[] =
-    "2222222222222222222222222222222222222222222222222222222222222222";
-constexpr char kGeneratorIdentity[] =
-    "3333333333333333333333333333333333333333333333333333333333333333";
 constexpr char kTrainingContractDigest[] =
     "8888888888888888888888888888888888888888888888888888888888888888";
 
@@ -65,10 +59,7 @@ inline std::string DeterministicBytes(const Message& message) {
 inline void Contract(rl::common::v1::ContractIdentity* contract) {
     contract->set_package_name("rl-contracts");
     contract->set_package_version("0.15.0");
-    Digest(contract->mutable_source_digest(), kSourceDigest);
-    Digest(contract->mutable_artifact_digest(), kContractArtifactDigest);
     contract->set_platform("linux/arm64");
-    contract->set_generator_identity(kGeneratorIdentity);
 }
 
 inline void Service(rl::common::v1::ServiceInstanceIdentity* service,
@@ -86,11 +77,7 @@ inline ModelDistributorConfig Config(const std::filesystem::path& root) {
     config.retention_steps = 101;
     config.contract.package_name = "rl-contracts";
     config.contract.package_version = "0.15.0";
-    config.contract.source_digest = kSourceDigest;
-    config.contract.artifact_digest = kContractArtifactDigest;
     config.contract.platform = "linux/arm64";
-    config.contract.generator_identity = kGeneratorIdentity;
-    config.training_contract_digest = kTrainingContractDigest;
     return config;
 }
 
