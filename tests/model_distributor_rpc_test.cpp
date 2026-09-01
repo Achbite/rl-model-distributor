@@ -21,7 +21,7 @@ void Require(bool condition, const std::string& message) {
 }
 
 std::filesystem::path ModelPath(const std::filesystem::path& root) {
-    const auto path = root / "0000000" / "SaveModel.onnx";
+    const auto path = root / "published" / "policy.bundle";
     std::filesystem::create_directories(path.parent_path());
     return path;
 }
@@ -91,7 +91,7 @@ void TestRegisterManifestDownloadAck() {
                     rl::training::v1::MODEL_REGISTER_RESULT_REGISTERED &&
                 register_response.manifest().identity().SerializeAsString() ==
                     manifest.identity().SerializeAsString(),
-            "RegisterModel preserves the fixed model identity");
+            "RegisterModel preserves the published model identity");
 
     rl::training::v1::GetModelManifestReq manifest_request;
     *manifest_request.mutable_requested_model() = manifest.identity();
@@ -128,7 +128,7 @@ void TestRegisterManifestDownloadAck() {
         expected_offset += static_cast<int64_t>(chunk.data().size());
     }
     Require(reader->Finish().ok() && downloaded_bytes == model_bytes,
-            "DownloadModel returns the fixed model bytes");
+            "DownloadModel returns the registered model bytes");
 
     rl::training::v1::AckModelReq ack_request;
     Service(ack_request.mutable_aiserver(),
@@ -144,6 +144,26 @@ void TestRegisterManifestDownloadAck() {
                 ack_response.result() ==
                     rl::training::v1::MODEL_ACK_RESULT_APPLIED,
             "AckModel settles the exact downloaded model identity");
+
+    rl::training::v1::AckModelReq second_load_request = ack_request;
+    second_load_request.set_load_instance_id("load-reused-bytes");
+    rl::training::v1::AckModelRsp second_load_response;
+    grpc::ClientContext second_load_context;
+    const grpc::Status second_load_status = stub->AckModel(
+        &second_load_context, second_load_request, &second_load_response);
+    Require(second_load_status.ok() &&
+                second_load_response.result() ==
+                    rl::training::v1::MODEL_ACK_RESULT_APPLIED,
+            "AckModel records each exact load instance independently");
+
+    rl::training::v1::AckModelRsp repeated_load_response;
+    grpc::ClientContext repeated_load_context;
+    const grpc::Status repeated_load_status = stub->AckModel(
+        &repeated_load_context, second_load_request, &repeated_load_response);
+    Require(repeated_load_status.ok() &&
+                repeated_load_response.result() ==
+                    rl::training::v1::MODEL_ACK_RESULT_ALREADY_APPLIED,
+            "AckModel is idempotent for one load instance");
 
     server->Shutdown();
 }

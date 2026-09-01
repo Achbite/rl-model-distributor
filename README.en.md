@@ -15,14 +15,16 @@ development checks from an explicit allowlist.
 
 ## 2. Build the 0.15.0 artifact
 
-Create the Contracts artifact first, then run the build from a clean Git savepoint:
+Create the task-neutral training-contract artifact first, then build from the
+current source:
 
 ```bash
-(cd ../rl-contracts && bash build_artifact.sh)
+(cd ../rl-contracts && bash build_artifact.sh training)
 bash build_artifact.sh
 ```
 
-The script compiles the service and runs its tests. Output:
+The artifact script only compiles the production binary. Tests remain an explicit
+`bash ./test.sh` operation from section 1. Output:
 
 ```text
 ../.workspace/artifacts/rl-model-distributor/0.15.0/<platform>/
@@ -30,24 +32,33 @@ The script compiles the service and runs its tests. Output:
 
 ## 3. Stage it into Learner
 
-Do not copy the binary manually. Use the Learner sync entry point:
+Prefer the Learner sync entrypoint to copy the complete artifact:
 
 ```bash
 (cd ../rl-learner && bash scripts/sync_runtime_artifacts.sh)
 ```
 
+For development artifacts, Learner's `make deps` builds and stages both required
+binaries. `make shell` never performs that synchronization implicitly.
+
 ## 4. Model manifest
 
-Model paths must use:
+Learner's current local publication layout is:
 
 ```text
 models/train/<step:min-width-7>/SaveModel.onnx
 ```
 
-`manifest.pb` is the sole authoritative model manifest. Distributor validates
-its deterministic protobuf, training-contract digest, profile, lineage, step,
-and digests at `RegisterModel`; it does not decide when individual AIServer
-Agents activate the model.
+`SaveModel.onnx` and the seven-digit directory are Learner-internal layout, not
+Distributor registration requirements. `RegisterModel` accepts an absolute,
+regular, non-symlink model file path explicitly supplied by the caller within the
+configured artifact root, while `manifest.pb` remains the sole
+authoritative model manifest. Distributor validates model identity, deterministic
+manifest bytes, declared size, and model-content digest. It preserves training
+configuration, training contract, profile, and lineage fields as opaque provenance;
+the consuming AIServer owns task semantics and ONNX ABI validation. ACK binds the
+AIServer service instance, `load_instance_id`, and exact registered model identity;
+Distributor does not decide per-Agent activation timing.
 
 ## 5. Run it directly
 

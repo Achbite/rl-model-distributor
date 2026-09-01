@@ -101,17 +101,6 @@ bool Integer(const std::string& text, T* output) {
     }
 }
 
-bool Sha256(const std::string& value) {
-    if (value.size() != 64) return false;
-    for (char character : value) {
-        if (!((character >= '0' && character <= '9') ||
-              (character >= 'a' && character <= 'f'))) {
-            return false;
-        }
-    }
-    return true;
-}
-
 }  // namespace
 
 bool LoadModelDistributorConfig(const std::string& yaml_path,
@@ -135,9 +124,7 @@ bool LoadModelDistributorConfig(const std::string& yaml_path,
         "server.listen_port",          "model.artifact_root",
         "model.chunk_bytes",           "model.retention_steps",
         "contract.package_name",       "contract.package_version",
-        "contract.source_digest",      "contract.artifact_digest",
-        "contract.platform",           "contract.generator_identity",
-        "contract.training_contract_digest",
+        "contract.platform",
     };
     for (const auto& entry : entries) {
         if (allowed.count(entry.section + "." + entry.key) == 0) {
@@ -162,15 +149,9 @@ bool LoadModelDistributorConfig(const std::string& yaml_path,
     const std::string* retention = get("model", "retention_steps");
     const std::string* package = get("contract", "package_name");
     const std::string* version = get("contract", "package_version");
-    const std::string* source = get("contract", "source_digest");
-    const std::string* artifact = get("contract", "artifact_digest");
     const std::string* platform = get("contract", "platform");
-    const std::string* generator = get("contract", "generator_identity");
-    const std::string* training_contract =
-        get("contract", "training_contract_digest");
     if (!port || !root || !chunk || !retention || !package || !version ||
-        !source || !artifact || !platform || !generator ||
-        !training_contract) {
+        !platform) {
         return false;
     }
     ModelDistributorConfig parsed;
@@ -184,22 +165,14 @@ bool LoadModelDistributorConfig(const std::string& yaml_path,
     parsed.artifact_root = *root;
     parsed.contract.package_name = *package;
     parsed.contract.package_version = *version;
-    parsed.contract.source_digest = *source;
-    parsed.contract.artifact_digest = *artifact;
     parsed.contract.platform = *platform;
-    parsed.contract.generator_identity = *generator;
-    parsed.training_contract_digest = *training_contract;
     if (parsed.listen_port <= 0 || parsed.listen_port > 65535 ||
         parsed.artifact_root.empty() || parsed.chunk_bytes == 0 ||
         parsed.chunk_bytes > 4 * 1024 * 1024 ||
         parsed.retention_steps != 101 ||
         parsed.contract.package_name != "rl-contracts" ||
         parsed.contract.package_version != "0.15.0" ||
-        !Sha256(parsed.contract.source_digest) ||
-        !Sha256(parsed.contract.artifact_digest) ||
-        parsed.contract.platform.empty() ||
-        !Sha256(parsed.contract.generator_identity) ||
-        !Sha256(parsed.training_contract_digest)) {
+        parsed.contract.platform.empty()) {
         std::cerr << "[ModelDistributor] config violates locked ranges"
                   << std::endl;
         return false;

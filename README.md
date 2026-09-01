@@ -14,14 +14,14 @@ bash ./test.sh
 
 ## 2. 构建 0.15.0 制品
 
-先生成 Contracts 制品，再从 clean Git 保存点执行：
+先生成任务无关的训练协议制品，再从当前源码执行：
 
 ```bash
-(cd ../rl-contracts && bash build_artifact.sh)
+(cd ../rl-contracts && bash build_artifact.sh training)
 bash build_artifact.sh
 ```
 
-构建脚本会编译并运行测试。输出：
+构建脚本只编译正式二进制；测试仍只通过第 1 节的 `bash ./test.sh` 显式运行。输出：
 
 ```text
 ../.workspace/artifacts/rl-model-distributor/0.15.0/<platform>/
@@ -29,23 +29,29 @@ bash build_artifact.sh
 
 ## 3. 装配到 Learner
 
-不要手工复制二进制。使用 Learner 同步入口：
+推荐使用 Learner 同步入口复制完整制品：
 
 ```bash
 (cd ../rl-learner && bash scripts/sync_runtime_artifacts.sh)
 ```
 
+开发制品可由 Learner 的 `make deps` 统一构建和同步；`make shell` 不会隐式执行该操作。
+
 ## 4. 模型 manifest
 
-模型路径必须使用：
+Learner 当前的本地发布布局示例为：
 
 ```text
 models/train/<step:min-width-7>/SaveModel.onnx
 ```
 
-`manifest.pb` 是唯一权威模型 manifest。Distributor 在 `RegisterModel` 边界直接校验
-确定性 protobuf、训练合同摘要、profile、lineage、step 与 digest，但不决定 AIServer
-中各 Agent 的激活时机。
+`SaveModel.onnx` 和七位目录只是 Learner 当前内部布局，不是 Distributor 的注册合同。
+`RegisterModel` 接受调用方在已配置 artifact root 内显式给出的绝对、常规且非符号链接的模型文件路径；
+`manifest.pb` 是唯一权威模型
+manifest。Distributor 校验模型身份、确定性 manifest、声明的字节数和模型内容 digest，并将训练
+配置、训练合同、profile 与 lineage 字段作为不可改写的 provenance 保存；任务语义和 ONNX ABI
+由消费模型的 AIServer 判断。ACK 绑定 AIServer 服务实例、`load_instance_id` 与已注册模型身份，
+Distributor 不决定各 Agent 的激活时机。
 
 ## 5. 单独运行
 
