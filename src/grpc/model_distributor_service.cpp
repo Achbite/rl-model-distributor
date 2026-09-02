@@ -23,8 +23,7 @@ grpc::Status ModelDistributorServiceImpl::RegisterModel(
     RegisteredModel record;
     std::string message;
     const auto result = registry_.Register(
-        request->manifest(), request->contract(),
-        request->local_artifact_path(), &record, &message);
+        request->manifest(), request->local_artifact_path(), &record, &message);
     response->set_result(result);
     response->set_message(message);
     if (result == rl::training::v1::MODEL_REGISTER_RESULT_REGISTERED ||
@@ -41,20 +40,12 @@ grpc::Status ModelDistributorServiceImpl::GetModelManifest(
     rl::training::v1::GetModelManifestRsp* response) {
     registry_.FillDistributorIdentity(response->mutable_distributor());
     const auto& selector = request->requested_model();
-    const bool has_artifact_digest =
-        !selector.artifact_digest().hex().empty();
-    const bool has_manifest_digest =
-        !selector.manifest_digest().hex().empty();
     if (!ModelRegistry::ServiceIdentityValid(request->requester()) ||
         selector.model_lineage_id().empty() ||
-        (!request->latest_in_lineage() && !selector.has_model_step()) ||
-        has_artifact_digest != has_manifest_digest ||
-        (has_artifact_digest &&
-         !ModelRegistry::ModelIdentityValid(selector))) {
-        response->set_result(
-            rl::training::v1::MODEL_LOOKUP_RESULT_REJECTED_IDENTITY);
+        (!request->latest_in_lineage() && !selector.has_model_step())) {
         response->set_message("model lookup identity is invalid");
-        return grpc::Status::OK;
+        return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                            response->message());
     }
     RegisteredModel record;
     std::string message;
@@ -129,8 +120,7 @@ grpc::Status ModelDistributorServiceImpl::DownloadModel(
         return grpc::Status(grpc::StatusCode::DATA_LOSS,
                             "model download read failed");
     }
-    registry_.RecordDownloadSuccess(
-        request->requester(), record.manifest.identity(), offset);
+    registry_.RecordDownloadSuccess(offset);
     return grpc::Status::OK;
 }
 

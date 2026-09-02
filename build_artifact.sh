@@ -4,23 +4,16 @@ set -euo pipefail
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 workspace_root="${RL_TRAINING_WORKSPACE:-$(cd "${repo_dir}/.." && pwd -P)}"
-contracts_repo="${workspace_root}/rl-contracts"
-tool="${contracts_repo}/scripts/artifact_manifest.py"
 version="$(tr -d '[:space:]' < "${repo_dir}/VERSION")"
-source "${repo_dir}/artifact_versions.env"
+contracts_version="$(tr -d '[:space:]' < "${workspace_root}/rl-contracts/VERSION")"
 platform="$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}')"
 platform_dir="${platform//\//-}"
-contract_dir="${workspace_root}/.workspace/artifacts/rl-contracts/${RL_TRAINING_CONTRACTS_VERSION}/training"
+contract_dir="${workspace_root}/.workspace/artifacts/rl-contracts/${contracts_version}/training"
 output_dir="${workspace_root}/.workspace/artifacts/rl-model-distributor/${version}/${platform_dir}"
 builder_image="rl-training/model-distributor-builder:${version}"
 
-python3 "${tool}" verify \
-    --root "${contract_dir}" \
-    --package rl-training-contracts \
-    --version "${RL_TRAINING_CONTRACTS_VERSION}" \
-    --channel production \
-    --require-file cpp/common.pb.cc \
-    --require-file cpp/training.pb.cc
+test -f "${contract_dir}/cpp/common.pb.cc"
+test -f "${contract_dir}/cpp/training.pb.cc"
 
 mkdir -p "${workspace_root}/.workspace/artifacts" "$(dirname "${output_dir}")"
 temp_dir="$(mktemp -d "${workspace_root}/.workspace/artifacts/.tmp-rl-model-distributor.XXXXXX")"
@@ -47,23 +40,8 @@ docker run --rm \
     '
 
 cp "${repo_dir}/configs/model_distributor_config.yaml" "${temp_dir}/config/model_distributor_config.yaml"
-python3 "${tool}" finalize-component \
-    --output "${temp_dir}" \
-    --package rl-model-distributor \
-    --version "${version}" \
-    --platform "${platform}" \
-    --channel production \
-    --contract-manifest "${contract_dir}/manifest.json" \
-    --executable "bin/maze_model_distributor"
-python3 "${tool}" verify \
-    --root "${temp_dir}" \
-    --package rl-model-distributor \
-    --version "${version}" \
-    --platform "${platform}" \
-    --channel production \
-    --contract-manifest "${contract_dir}/manifest.json" \
-    --require-executable "bin/maze_model_distributor" \
-    --require-file "config/model_distributor_config.yaml"
+test -x "${temp_dir}/bin/maze_model_distributor"
+test -f "${temp_dir}/config/model_distributor_config.yaml"
 
 rm -rf "${output_dir}"
 mv "${temp_dir}" "${output_dir}"

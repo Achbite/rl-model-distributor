@@ -52,13 +52,14 @@ models/train/<step:min-width-7>/SaveModel.onnx
 `SaveModel.onnx` and the seven-digit directory are Learner-internal layout, not
 Distributor registration requirements. `RegisterModel` accepts an absolute,
 regular, non-symlink model file path explicitly supplied by the caller within the
-configured artifact root, while `manifest.pb` remains the sole
-authoritative model manifest. Distributor validates model identity, deterministic
-manifest bytes, declared size, and model-content digest. It preserves training
-configuration, training contract, profile, and lineage fields as opaque provenance;
-the consuming AIServer owns task semantics and ONNX ABI validation. ACK binds the
-AIServer service instance, `load_instance_id`, and exact registered model identity;
-Distributor does not decide per-Agent activation timing.
+configured artifact root, while `manifest.pb` remains the sole authoritative model
+manifest. Distributor validates lineage/step, publication time, declared byte size,
+the regular non-symlink file path under the artifact root, and the size of the opened
+file. It computes and checks no content digest. Model bytes are streamed from the
+opened descriptor by model identity, offset, and declared size; the consuming AIServer
+owns task semantics and ONNX name/shape/type validation. ACK binds the AIServer service
+lifecycle, `load_instance_id`, and exact registered model identity. Distributor does
+not decide per-Agent activation timing.
 
 ## 5. Run it directly
 

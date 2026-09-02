@@ -47,11 +47,11 @@ models/train/<step:min-width-7>/SaveModel.onnx
 
 `SaveModel.onnx` 和七位目录只是 Learner 当前内部布局，不是 Distributor 的注册合同。
 `RegisterModel` 接受调用方在已配置 artifact root 内显式给出的绝对、常规且非符号链接的模型文件路径；
-`manifest.pb` 是唯一权威模型
-manifest。Distributor 校验模型身份、确定性 manifest、声明的字节数和模型内容 digest，并将训练
-配置、训练合同、profile 与 lineage 字段作为不可改写的 provenance 保存；任务语义和 ONNX ABI
-由消费模型的 AIServer 判断。ACK 绑定 AIServer 服务实例、`load_instance_id` 与已注册模型身份，
-Distributor 不决定各 Agent 的激活时机。
+`manifest.pb` 是唯一权威模型 manifest。Distributor 校验 lineage/step、发布时间、声明字节数、
+artifact root 内的常规非符号链接文件路径，以及打开后文件大小；它不计算或校验内容摘要。
+模型下载按已打开文件句柄、模型身份、offset 与声明字节数传输，任务语义和 ONNX 名称/shape/type
+由消费模型的 AIServer 判断。ACK 绑定 AIServer 服务生命周期、`load_instance_id` 与已注册模型
+身份，Distributor 不决定各 Agent 的激活时机。
 
 ## 5. 单独运行
 

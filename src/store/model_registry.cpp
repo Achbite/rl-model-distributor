@@ -1,16 +1,8 @@
 #include "store/model_registry.h"
 
-#include <google/protobuf/io/coded_stream.h>
-#include <google/protobuf/io/zero_copy_stream_impl_lite.h>
-#include <openssl/evp.h>
-
 #include <algorithm>
-#include <array>
-#include <cerrno>
 #include <chrono>
 #include <fcntl.h>
-#include <fstream>
-#include <iomanip>
 #include <limits>
 #include <sstream>
 #include <sys/stat.h>
@@ -24,25 +16,6 @@ int64_t NowMs() {
         .count();
 }
 
-bool LowerSha256(const rl::common::v1::ContentDigest& digest) {
-    if (digest.algorithm() != rl::common::v1::DIGEST_ALGORITHM_SHA256 ||
-        digest.hex().size() != 64) {
-        return false;
-    }
-    for (char character : digest.hex()) {
-        if (!((character >= '0' && character <= '9') ||
-              (character >= 'a' && character <= 'f'))) {
-            return false;
-        }
-    }
-    return true;
-}
-
-bool Sha256Bytes(const void* data,
-                 size_t size,
-                 std::string* checksum,
-                 std::string* error);
-
 bool IsWithin(const std::filesystem::path& child,
               const std::filesystem::path& parent) {
     auto child_it = child.begin();
@@ -53,155 +26,16 @@ bool IsWithin(const std::filesystem::path& child,
     return true;
 }
 
-bool Sha256Bytes(const void* data,
-                 size_t size,
-                 std::string* checksum,
-                 std::string* error) {
-    EVP_MD_CTX* context = EVP_MD_CTX_new();
-    if (context == nullptr) {
-        *error = "cannot allocate SHA-256 context";
-        return false;
-    }
-    std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
-    unsigned int digest_size = 0;
-    const bool ok = EVP_DigestInit_ex(context, EVP_sha256(), nullptr) == 1 &&
-                    EVP_DigestUpdate(context, data, size) == 1 &&
-                    EVP_DigestFinal_ex(context, digest.data(), &digest_size) ==
-                        1;
-    EVP_MD_CTX_free(context);
-    if (!ok || digest_size != 32) {
-        *error = "failed to calculate SHA-256";
-        return false;
-    }
-    std::ostringstream output;
-    output << std::hex << std::setfill('0');
-    for (unsigned int index = 0; index < digest_size; ++index) {
-        output << std::setw(2) << static_cast<unsigned int>(digest[index]);
-    }
-    *checksum = output.str();
-    return true;
-}
-
-bool ComputeSha256Descriptor(int descriptor,
-                             int64_t size,
-                             std::string* checksum,
-                             std::string* error) {
-    EVP_MD_CTX* context = EVP_MD_CTX_new();
-    if (context == nullptr) {
-        *error = "cannot allocate SHA-256 context";
-        return false;
-    }
-    bool ok = EVP_DigestInit_ex(context, EVP_sha256(), nullptr) == 1;
-    std::array<char, 64 * 1024> buffer{};
-    int64_t offset = 0;
-    while (ok && offset < size) {
-        const size_t requested = static_cast<size_t>(
-            std::min<int64_t>(size - offset, buffer.size()));
-        const ssize_t count = ::pread(
-            descriptor, buffer.data(), requested, static_cast<off_t>(offset));
-        if (count < 0 && errno == EINTR) continue;
-        if (count <= 0) {
-            ok = false;
-            break;
-        }
-        ok = EVP_DigestUpdate(
-                 context, buffer.data(), static_cast<size_t>(count)) == 1;
-        offset += count;
-    }
-    std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
-    unsigned int digest_size = 0;
-    if (ok && offset == size) {
-        ok = EVP_DigestFinal_ex(context, digest.data(), &digest_size) == 1;
-    } else {
-        ok = false;
-    }
-    EVP_MD_CTX_free(context);
-    if (!ok || digest_size != 32) {
-        *error = "failed to calculate SHA-256 from opened model artifact";
-        return false;
-    }
-    std::ostringstream output;
-    output << std::hex << std::setfill('0');
-    for (unsigned int index = 0; index < digest_size; ++index) {
-        output << std::setw(2) << static_cast<unsigned int>(digest[index]);
-    }
-    *checksum = output.str();
-    return true;
-}
-
 }  // namespace
 
 ModelArtifactHandle::ModelArtifactHandle(
     int descriptor_value,
-    int64_t size_value,
-    std::filesystem::path path_value)
+    int64_t size_value)
     : descriptor(descriptor_value),
-      size(size_value),
-      path(std::move(path_value)) {}
+      size(size_value) {}
 
 ModelArtifactHandle::~ModelArtifactHandle() {
     if (descriptor >= 0) ::close(descriptor);
-}
-
-bool ComputeSha256(const std::filesystem::path& path,
-                   std::string* checksum,
-                   std::string* error) {
-    std::ifstream stream(path, std::ios::binary);
-    if (!stream.is_open()) {
-        *error = "cannot open model file: " + path.string();
-        return false;
-    }
-    EVP_MD_CTX* context = EVP_MD_CTX_new();
-    if (context == nullptr) {
-        *error = "cannot allocate SHA-256 context";
-        return false;
-    }
-    bool ok = EVP_DigestInit_ex(context, EVP_sha256(), nullptr) == 1;
-    std::array<char, 64 * 1024> buffer{};
-    while (ok && stream.good()) {
-        stream.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-        const std::streamsize count = stream.gcount();
-        if (count > 0) {
-            ok = EVP_DigestUpdate(context, buffer.data(),
-                                  static_cast<size_t>(count)) == 1;
-        }
-    }
-    if (stream.bad()) ok = false;
-    std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
-    unsigned int digest_size = 0;
-    if (ok) {
-        ok = EVP_DigestFinal_ex(context, digest.data(), &digest_size) == 1;
-    }
-    EVP_MD_CTX_free(context);
-    if (!ok || digest_size != 32) {
-        *error = "failed to calculate SHA-256: " + path.string();
-        return false;
-    }
-    std::ostringstream output;
-    output << std::hex << std::setfill('0');
-    for (unsigned int index = 0; index < digest_size; ++index) {
-        output << std::setw(2) << static_cast<unsigned int>(digest[index]);
-    }
-    *checksum = output.str();
-    return true;
-}
-
-bool ComputeManifestDigest(
-    const rl::training::v1::ModelArtifactManifest& manifest,
-    std::string* digest,
-    std::string* error) {
-    rl::training::v1::ModelArtifactManifest copy(manifest);
-    copy.mutable_identity()->clear_manifest_digest();
-    std::string serialized;
-    google::protobuf::io::StringOutputStream output(&serialized);
-    google::protobuf::io::CodedOutputStream coded(&output);
-    coded.SetSerializationDeterministic(true);
-    if (!copy.SerializeToCodedStream(&coded) || coded.HadError()) {
-        *error = "failed to deterministically serialize model manifest";
-        return false;
-    }
-    coded.Trim();
-    return Sha256Bytes(serialized.data(), serialized.size(), digest, error);
 }
 
 ModelRegistry::ModelRegistry(ModelDistributorConfig config)
@@ -224,22 +58,7 @@ bool ModelRegistry::ServiceIdentityValid(
 bool ModelRegistry::ModelIdentityValid(
     const rl::training::v1::ModelIdentity& identity) {
     return !identity.model_lineage_id().empty() &&
-           identity.has_model_step() &&
-           LowerSha256(identity.artifact_digest()) &&
-           LowerSha256(identity.manifest_digest());
-}
-
-bool ModelRegistry::ContractMatches(
-    const rl::common::v1::ContractIdentity& contract) const {
-    return contract.package_name() == config_.contract.package_name &&
-           contract.package_version() == config_.contract.package_version;
-}
-
-void ModelRegistry::FillContractIdentity(
-    rl::common::v1::ContractIdentity* contract) const {
-    contract->set_package_name(config_.contract.package_name);
-    contract->set_package_version(config_.contract.package_version);
-    contract->set_platform(config_.contract.platform);
+           identity.has_model_step();
 }
 
 void ModelRegistry::FillDistributorIdentity(
@@ -251,29 +70,15 @@ void ModelRegistry::FillDistributorIdentity(
 
 bool ModelRegistry::ValidateManifest(
     const rl::training::v1::ModelArtifactManifest& manifest,
-    const rl::common::v1::ContractIdentity& contract,
     const std::string& local_artifact_path,
     std::filesystem::path* model_path,
     std::string* error) const {
-    if (!ContractMatches(contract)) {
-        *error = "registration contract identity does not match service artifact";
-        return false;
-    }
     if (!ModelIdentityValid(manifest.identity())) {
         *error = "model identity is invalid";
         return false;
     }
-    // Training configuration and rollout estimator fields are opaque
-    // provenance to the distributor. Its boundary owns the published model
-    // identity, manifest bytes, artifact size and artifact bytes.
     if (manifest.size_bytes() <= 0 || manifest.published_at_unix_ms() <= 0) {
         *error = "manifest artifact metadata is invalid";
-        return false;
-    }
-    std::string computed_manifest_digest;
-    if (!ComputeManifestDigest(manifest, &computed_manifest_digest, error) ||
-        computed_manifest_digest != manifest.identity().manifest_digest().hex()) {
-        if (error->empty()) *error = "manifest digest does not match canonical bytes";
         return false;
     }
 
@@ -308,26 +113,18 @@ bool ModelRegistry::ValidateManifest(
         *error = "artifact size does not match manifest";
         return false;
     }
-    std::string artifact_digest;
-    if (!ComputeSha256(canonical, &artifact_digest, error)) return false;
-    if (artifact_digest != manifest.identity().artifact_digest().hex()) {
-        *error = "artifact digest does not match model bytes";
-        return false;
-    }
     *model_path = canonical;
     return true;
 }
 
 rl::training::v1::ModelRegisterResult ModelRegistry::Register(
     const rl::training::v1::ModelArtifactManifest& manifest,
-    const rl::common::v1::ContractIdentity& contract,
     const std::string& local_artifact_path,
     RegisteredModel* registered,
     std::string* message) {
     std::filesystem::path path;
     std::string error;
-    if (!ValidateManifest(manifest, contract, local_artifact_path,
-                          &path, &error)) {
+    if (!ValidateManifest(manifest, local_artifact_path, &path, &error)) {
         std::lock_guard<std::mutex> lock(mutex_);
         ++register_attempt_count_;
         ++rejected_register_count_;
@@ -339,13 +136,9 @@ rl::training::v1::ModelRegisterResult ModelRegistry::Register(
     const int descriptor = ::open(
         path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     struct stat status {};
-    std::string opened_digest;
     if (descriptor < 0 || ::fstat(descriptor, &status) != 0 ||
         !S_ISREG(status.st_mode) || status.st_size <= 0 ||
-        status.st_size != manifest.size_bytes() ||
-        !ComputeSha256Descriptor(descriptor, status.st_size,
-                                 &opened_digest, &error) ||
-        opened_digest != manifest.identity().artifact_digest().hex()) {
+        status.st_size != manifest.size_bytes()) {
         if (descriptor >= 0) ::close(descriptor);
         if (error.empty()) {
             error = "opened model artifact changed after manifest validation";
@@ -358,7 +151,7 @@ rl::training::v1::ModelRegisterResult ModelRegistry::Register(
         return rl::training::v1::MODEL_REGISTER_RESULT_REJECTED_INVALID;
     }
     auto artifact = std::make_shared<ModelArtifactHandle>(
-        descriptor, static_cast<int64_t>(status.st_size), path);
+        descriptor, static_cast<int64_t>(status.st_size));
     std::lock_guard<std::mutex> lock(mutex_);
     ++register_attempt_count_;
     const ModelKey key{manifest.identity().model_lineage_id(),
@@ -394,7 +187,7 @@ rl::training::v1::ModelRegisterResult ModelRegistry::Register(
         *message = last_error_;
         return rl::training::v1::MODEL_REGISTER_RESULT_REJECTED_INVALID;
     }
-    RegisteredModel record{manifest, path, std::move(artifact)};
+    RegisteredModel record{manifest, std::move(artifact)};
     models_.emplace(key, record);
     latest_step_seen_[key.lineage_id] = key.step;
     if (!has_latest_model_ ||
@@ -444,63 +237,6 @@ bool ModelRegistry::Get(const rl::training::v1::ModelIdentity& identity,
     return true;
 }
 
-bool ModelRegistry::GetByStep(const std::string& lineage_id,
-                              uint64_t model_step,
-                              RegisteredModel* model,
-                              std::string* message) {
-    if (lineage_id.empty()) {
-        *message = "model lineage is required";
-        return false;
-    }
-    std::lock_guard<std::mutex> lock(mutex_);
-    const auto found = models_.find(ModelKey{lineage_id, model_step});
-    if (found == models_.end()) {
-        last_error_ = "model step not found";
-        *message = last_error_;
-        return false;
-    }
-    *model = found->second;
-    *message = "model step found";
-    return true;
-}
-
-bool ModelRegistry::GetLatest(const std::string& lineage_id,
-                              RegisteredModel* model,
-                              std::string* message) {
-    if (lineage_id.empty()) {
-        *message = "model lineage is required";
-        return false;
-    }
-    std::lock_guard<std::mutex> lock(mutex_);
-    const auto latest = latest_step_seen_.find(lineage_id);
-    if (latest == latest_step_seen_.end()) {
-        last_error_ = "model lineage not found";
-        *message = last_error_;
-        return false;
-    }
-    const auto found = models_.find(ModelKey{lineage_id, latest->second});
-    if (found == models_.end()) {
-        last_error_ = "latest model is outside retention";
-        *message = last_error_;
-        return false;
-    }
-    *model = found->second;
-    *message = "latest model found";
-    return true;
-}
-
-bool ModelRegistry::GetAvailableRange(const std::string& lineage_id,
-                                      uint64_t* floor,
-                                      uint64_t* latest,
-                                      std::string* message) const {
-    if (lineage_id.empty() || floor == nullptr || latest == nullptr) {
-        if (message != nullptr) *message = "model lineage is required";
-        return false;
-    }
-    std::lock_guard<std::mutex> lock(mutex_);
-    return AvailableRangeLocked(lineage_id, floor, latest, message);
-}
-
 bool ModelRegistry::AvailableRangeLocked(const std::string& lineage_id,
                                          uint64_t* floor,
                                          uint64_t* latest,
@@ -534,17 +270,6 @@ bool ModelRegistry::GetManifestSnapshot(
         if (message != nullptr) *message = "model selector is invalid";
         return false;
     }
-    const bool has_artifact_digest =
-        selector.has_artifact_digest() &&
-        !selector.artifact_digest().hex().empty();
-    const bool has_manifest_digest =
-        selector.has_manifest_digest() &&
-        !selector.manifest_digest().hex().empty();
-    if (!latest_in_lineage && has_artifact_digest != has_manifest_digest) {
-        *message = "requested model selector has incomplete digest identity";
-        return false;
-    }
-
     std::lock_guard<std::mutex> lock(mutex_);
     if (!latest_in_lineage && !selector.has_model_step()) {
         *message = "requested model selector is missing model step";
@@ -560,12 +285,8 @@ bool ModelRegistry::GetManifestSnapshot(
         key.step = latest_found->second;
     }
     const auto found = models_.find(key);
-    if (found == models_.end() ||
-        (!latest_in_lineage && has_artifact_digest &&
-         found->second.manifest.identity().SerializeAsString() !=
-             selector.SerializeAsString())) {
-        last_error_ = has_artifact_digest ? "model identity not found"
-                                          : "model step not found";
+    if (found == models_.end()) {
+        last_error_ = "model step not found";
         *message = last_error_;
         return false;
     }
@@ -674,12 +395,7 @@ void ModelRegistry::RecordDownloadAttempt() {
     ++download_request_count_;
 }
 
-void ModelRegistry::RecordDownloadSuccess(
-    const rl::common::v1::ServiceInstanceIdentity& requester,
-    const rl::training::v1::ModelIdentity& model,
-    int64_t bytes) {
-    (void)requester;
-    (void)model;
+void ModelRegistry::RecordDownloadSuccess(int64_t bytes) {
     std::lock_guard<std::mutex> lock(mutex_);
     ++download_success_count_;
     bytes_served_ += bytes;
@@ -694,7 +410,6 @@ void ModelRegistry::RecordDownloadFailure(const std::string& error) {
 void ModelRegistry::GetStatus(
     rl::training::v1::ModelDistributorStatusRsp* response) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    FillContractIdentity(response->mutable_contract());
     FillDistributorIdentity(response->mutable_distributor());
     response->set_ready(true);
     response->set_registered_model_count(static_cast<int64_t>(models_.size()));
