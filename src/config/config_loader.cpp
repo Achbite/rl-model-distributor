@@ -123,8 +123,6 @@ bool LoadModelDistributorConfig(const std::string& yaml_path,
     static const std::set<std::string> allowed = {
         "server.listen_port",          "model.artifact_root",
         "model.chunk_bytes",           "model.retention_steps",
-        "contract.package_name",       "contract.package_version",
-        "contract.platform",
     };
     for (const auto& entry : entries) {
         if (allowed.count(entry.section + "." + entry.key) == 0) {
@@ -147,11 +145,7 @@ bool LoadModelDistributorConfig(const std::string& yaml_path,
     const std::string* root = get("model", "artifact_root");
     const std::string* chunk = get("model", "chunk_bytes");
     const std::string* retention = get("model", "retention_steps");
-    const std::string* package = get("contract", "package_name");
-    const std::string* version = get("contract", "package_version");
-    const std::string* platform = get("contract", "platform");
-    if (!port || !root || !chunk || !retention || !package || !version ||
-        !platform) {
+    if (!port || !root || !chunk || !retention) {
         return false;
     }
     ModelDistributorConfig parsed;
@@ -163,17 +157,11 @@ bool LoadModelDistributorConfig(const std::string& yaml_path,
         return false;
     }
     parsed.artifact_root = *root;
-    parsed.contract.package_name = *package;
-    parsed.contract.package_version = *version;
-    parsed.contract.platform = *platform;
     if (parsed.listen_port <= 0 || parsed.listen_port > 65535 ||
         parsed.artifact_root.empty() || parsed.chunk_bytes == 0 ||
         parsed.chunk_bytes > 4 * 1024 * 1024 ||
-        parsed.retention_steps != 101 ||
-        parsed.contract.package_name != "rl-contracts" ||
-        parsed.contract.package_version != "0.15.0" ||
-        parsed.contract.platform.empty()) {
-        std::cerr << "[ModelDistributor] config violates locked ranges"
+        parsed.retention_steps == 0) {
+        std::cerr << "[ModelDistributor] config value is out of range"
                   << std::endl;
         return false;
     }

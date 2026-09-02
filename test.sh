@@ -27,4 +27,4 @@ cmake --build "${test_build_dir}" --parallel \
     --target model_distributor_development_test
 ctest --test-dir "${test_build_dir}" \
     --output-on-failure \
-    -R '^model_distributor_development_contract$'
+    -R '^model_distributor_data_path$'

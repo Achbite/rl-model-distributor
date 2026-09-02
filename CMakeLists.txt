@@ -4,7 +4,6 @@ project(maze_model_distributor LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(OpenSSL REQUIRED)
 find_package(Protobuf REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GRPC REQUIRED grpc++)
@@ -35,7 +34,6 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${GRPC_INCLUDE_DIRS}
 )
 target_link_libraries(${PROJECT_NAME} PRIVATE
-    OpenSSL::Crypto
     protobuf::libprotobuf
     ${GRPC_LIBRARIES}
     pthread
@@ -57,13 +55,12 @@ if(BUILD_TESTING)
         ${GRPC_INCLUDE_DIRS}
     )
     target_link_libraries(model_distributor_development_test PRIVATE
-        OpenSSL::Crypto
         protobuf::libprotobuf
         ${GRPC_LIBRARIES}
         pthread
     )
     add_test(
-        NAME model_distributor_development_contract
+        NAME model_distributor_data_path
         COMMAND model_distributor_development_test
     )
 endif()

@@ -5,8 +5,3 @@ model:
   artifact_root: __DIRECT_ARTIFACT_ROOT_REQUIRED__
   chunk_bytes: 1048576
   retention_steps: 101
-
-contract:
-  package_name: rl-contracts
-  package_version: 0.15.0
-  platform: linux/arm64

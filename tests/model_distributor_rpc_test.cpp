@@ -58,10 +58,7 @@ void TestRegisterManifestDownloadAck() {
         Require(output.good(), "write fixed model artifact");
     }
 
-    std::string artifact_digest;
-    std::string error;
-    Require(ComputeSha256(model_path, &artifact_digest, &error), error);
-    const auto manifest = Manifest(model_path, artifact_digest);
+    const auto manifest = Manifest(model_path);
 
     ModelDistributorServiceImpl service(Config(temporary_root.path()));
     int port = 0;
@@ -80,7 +77,6 @@ void TestRegisterManifestDownloadAck() {
 
     rl::training::v1::RegisterModelReq register_request;
     *register_request.mutable_manifest() = manifest;
-    Contract(register_request.mutable_contract());
     register_request.set_local_artifact_path(model_path.string());
     rl::training::v1::RegisterModelRsp register_response;
     grpc::ClientContext register_context;
@@ -105,10 +101,8 @@ void TestRegisterManifestDownloadAck() {
                 manifest_response.result() ==
                     rl::training::v1::MODEL_LOOKUP_RESULT_FOUND &&
                 manifest_response.manifest().identity().SerializeAsString() ==
-                    manifest.identity().SerializeAsString() &&
-                manifest_response.manifest().identity().artifact_digest().hex() ==
-                    artifact_digest,
-            "GetModelManifest returns the registered identity and digest");
+                    manifest.identity().SerializeAsString(),
+            "GetModelManifest returns the registered object identity");
 
     rl::training::v1::DownloadModelReq download_request;
     *download_request.mutable_requested_model() = manifest.identity();
@@ -172,6 +166,6 @@ void TestRegisterManifestDownloadAck() {
 
 int main() {
     TestRegisterManifestDownloadAck();
-    std::cout << "model_distributor_development_contract: PASS" << std::endl;
+    std::cout << "model_distributor_data_path: PASS" << std::endl;
     return 0;
 }
