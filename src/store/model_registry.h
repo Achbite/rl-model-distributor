@@ -1,7 +1,7 @@
 #pragma once
 
 #include "config/config_loader.h"
-#include "training.pb.h"
+#include "proto/training/training.pb.h"
 
 #include <cstdint>
 #include <filesystem>

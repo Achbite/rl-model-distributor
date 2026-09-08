@@ -14,9 +14,13 @@ if(NOT CONTRACT_CPP_DIR)
 endif()
 
 set(PROTO_SOURCES
-    ${CONTRACT_CPP_DIR}/common.pb.cc
-    ${CONTRACT_CPP_DIR}/training.pb.cc
-    ${CONTRACT_CPP_DIR}/training.grpc.pb.cc
+    ${CONTRACT_CPP_DIR}/proto/common/identity.pb.cc
+    ${CONTRACT_CPP_DIR}/proto/training/model_identity.pb.cc
+    ${CONTRACT_CPP_DIR}/proto/training/training.pb.cc
+    ${CONTRACT_CPP_DIR}/proto/training/training.grpc.pb.cc
+    ${CONTRACT_CPP_DIR}/proto/metrics/registry.pb.cc
+    ${CONTRACT_CPP_DIR}/proto/metrics/catalog.pb.cc
+    ${CONTRACT_CPP_DIR}/proto/metrics/catalog.grpc.pb.cc
 )
 
 set(SOURCES

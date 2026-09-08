@@ -1,11 +1,13 @@
 #include "config/config_loader.h"
 #include "grpc/model_distributor_service.h"
+#include "rl_sdk/metric_catalog.h"
 
 #include <grpcpp/grpcpp.h>
 
 #include <iostream>
 #include <memory>
 #include <string>
+#include "proto/metrics/catalog.grpc.pb.h"
 
 int main(int argc, char* argv[]) {
     const std::string config_path =
@@ -16,11 +18,13 @@ int main(int argc, char* argv[]) {
     }
 
     ModelDistributorServiceImpl service(config);
+    rl_sdk::MetricCatalogService catalog_service([&] { return service.MetricCatalog(); });
     const std::string address =
         "0.0.0.0:" + std::to_string(config.listen_port);
     grpc::ServerBuilder builder;
     builder.AddListeningPort(address, grpc::InsecureServerCredentials());
     builder.RegisterService(&service);
+    builder.RegisterService(&catalog_service);
     std::unique_ptr<grpc::Server> server = builder.BuildAndStart();
     if (!server) {
         std::cerr << "[ModelDistributor] failed to listen on " << address
