@@ -2,7 +2,8 @@
 
 #include "config/config_loader.h"
 #include "store/model_registry.h"
-#include "training.grpc.pb.h"
+#include "proto/training/training.grpc.pb.h"
+#include "proto/metrics/catalog.pb.h"
 
 class ModelDistributorServiceImpl final
     : public rl::training::v1::ModelDistributorService::Service {
@@ -32,6 +33,7 @@ public:
         rl::training::v1::ModelDistributorStatusRsp* response) override;
 
     const std::string& instance_id() const;
+    rl::training::v1::GetMetricCatalogRsp MetricCatalog();
 
 private:
     ModelRegistry registry_;

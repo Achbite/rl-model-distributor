@@ -147,3 +147,24 @@ grpc::Status ModelDistributorServiceImpl::GetModelDistributorStatus(
 const std::string& ModelDistributorServiceImpl::instance_id() const {
     return registry_.instance_id();
 }
+
+#include "rl_sdk/metric_catalog.h"
+#include "proto/metrics/catalog.pb.h"
+
+rl::training::v1::GetMetricCatalogRsp ModelDistributorServiceImpl::MetricCatalog() {
+    namespace wire = rl::training::v1;
+    wire::GetMetricCatalogRsp catalog;
+    registry_.FillDistributorIdentity(catalog.mutable_source());
+    const std::string method = "rl.training.v1.ModelDistributorService/GetModelDistributorStatus";
+    rl_sdk::AddStatusMetric(catalog, "model.distributor.registered_model_count", "Registered Model Count", "model", "count", "distributor", method, "registered_model_count");
+    rl_sdk::AddStatusMetric(catalog, "model.distributor.register_attempt_count", "Register Attempt Count", "model", "count", "distributor", method, "register_attempt_count");
+    rl_sdk::AddStatusMetric(catalog, "model.distributor.duplicate_register_count", "Duplicate Register Count", "model", "count", "distributor", method, "duplicate_register_count");
+    rl_sdk::AddStatusMetric(catalog, "model.distributor.rejected_register_count", "Rejected Register Count", "model", "count", "distributor", method, "rejected_register_count");
+    rl_sdk::AddStatusMetric(catalog, "model.distributor.download_request_count", "Download Request Count", "model", "count", "distributor", method, "download_request_count");
+    rl_sdk::AddStatusMetric(catalog, "model.distributor.download_success_count", "Download Success Count", "model", "count", "distributor", method, "download_success_count");
+    rl_sdk::AddStatusMetric(catalog, "model.distributor.download_failure_count", "Download Failure Count", "model", "count", "distributor", method, "download_failure_count");
+    rl_sdk::AddStatusMetric(catalog, "model.distributor.bytes_served", "Bytes Served", "model", "bytes", "distributor", method, "bytes_served");
+    rl_sdk::AddStatusMetric(catalog, "model.distributor.loaded_ack_count", "Loaded Ack Count", "model", "count", "distributor", method, "loaded_ack_count");
+    rl_sdk::AddStatusMetric(catalog, "model.distributor.failed_ack_count", "Failed Ack Count", "model", "count", "distributor", method, "failed_ack_count");
+    return catalog;
+}
