@@ -159,7 +159,27 @@ void TestRegisterManifestDownloadAck() {
                     rl::training::v1::MODEL_ACK_RESULT_ALREADY_APPLIED,
             "AckModel is idempotent for one load instance");
 
+    // Another actual load attempt can fail; Status must preserve its origin.
+    auto failed = ack_request;
+    failed.set_load_instance_id("load-prepare-failed");
+    failed.set_load_status(rl::training::v1::MODEL_LOAD_STATUS_FAILED);
+    failed.set_message("prepare: observation dimension mismatch in bootstrap model");
+    rl::training::v1::AckModelRsp failed_response;
+    grpc::ClientContext failed_context;
+    Require(stub->AckModel(&failed_context, failed, &failed_response).ok() &&
+                failed_response.result() == rl::training::v1::MODEL_ACK_RESULT_APPLIED,
+            "actual registry accepts a definite FAILED load result");
+    rl::training::v1::ModelDistributorStatusRsp observed;
+    grpc::ClientContext status_context;
+    Require(stub->GetModelDistributorStatus(&status_context, {}, &observed).ok() &&
+                observed.latest_ack_status() == rl::training::v1::MODEL_LOAD_STATUS_FAILED &&
+                observed.latest_ack_model().SerializeAsString() == failed.model().SerializeAsString() &&
+                observed.latest_ack_aiserver().SerializeAsString() == failed.aiserver().SerializeAsString() &&
+                observed.last_error() == failed.message(),
+            "Status delivers FAILED identity, producer and original error to its consumer");
+
     server->Shutdown();
+    server->Wait();
 }
 
 }  // namespace
