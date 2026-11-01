@@ -53,6 +53,8 @@ artifact root 内的常规非符号链接文件路径，以及打开后文件大
 由消费模型的 AIServer 判断。ACK 绑定 AIServer 服务生命周期、`load_instance_id` 与已注册模型
 身份，Distributor 不决定各 Agent 的激活时机。
 
+调用 `GetModelLoadReceipt` 可按 AIServer 生命周期和模型身份读取保留期内最近一次实际应用的加载回执，返回原始 load instance、结果和原因。重复 ACK 保持此前的顺序。无回执时 `receipt` 缺席，超出保留窗口会标记 `outside_retention`。
+
 ## 5. 单独运行
 
 ```bash

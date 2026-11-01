@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <list>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -49,6 +50,9 @@ public:
     rl::training::v1::ModelAckResult Ack(
         const rl::training::v1::AckModelReq& request,
         std::string* message);
+
+    void GetLoadReceipt(const rl::training::v1::GetModelLoadReceiptReq& request,
+                        rl::training::v1::GetModelLoadReceiptRsp* response) const;
 
     void RecordDownloadAttempt();
     void RecordDownloadSuccess(int64_t bytes);
@@ -98,8 +102,9 @@ private:
     mutable std::mutex mutex_;
     std::map<ModelKey, RegisteredModel> models_;
     std::map<std::string, uint64_t> latest_step_seen_;
-    std::map<std::string, rl::training::v1::AckModelReq> acknowledgements_;
-    std::map<std::string, ModelKey> acknowledgement_models_;
+    using LoadReceipts = std::list<rl::training::v1::AckModelReq>;
+    LoadReceipts load_receipts_;  // Application order within the retention window.
+    std::map<std::string, LoadReceipts::iterator> acknowledgements_;
     bool has_latest_model_ = false;
     rl::training::v1::ModelIdentity latest_model_;
     int64_t register_attempt_count_ = 0;

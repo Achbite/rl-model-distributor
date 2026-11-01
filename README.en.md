@@ -60,6 +60,8 @@ owns task semantics and ONNX name/shape/type validation. ACK binds the AIServer 
 lifecycle, `load_instance_id`, and exact registered model identity. Distributor does
 not decide per-Agent activation timing.
 
+`GetModelLoadReceipt` reads the last applied load receipt within retention for one AIServer lifecycle and model identity. The receipt preserves the load instance, result and original message. Duplicate ACKs keep their original order. An absent receipt and an expired retention window are distinguished by `outside_retention`.
+
 ## 5. Run it directly
 
 ```bash

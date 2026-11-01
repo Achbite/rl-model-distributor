@@ -1,5 +1,7 @@
 #include "store/model_registry.h"
 
+#include <iterator>
+
 #include <algorithm>
 #include <chrono>
 #include <fcntl.h>
@@ -332,7 +334,7 @@ rl::training::v1::ModelAckResult ModelRegistry::Ack(
     const std::string key = AckKey(request);
     const auto existing = acknowledgements_.find(key);
     if (existing != acknowledgements_.end()) {
-        if (AckEquivalent(existing->second, request)) {
+        if (AckEquivalent(*existing->second, request)) {
             *message = "model ACK already applied";
             return rl::training::v1::MODEL_ACK_RESULT_ALREADY_APPLIED;
         }
@@ -350,11 +352,8 @@ rl::training::v1::ModelAckResult ModelRegistry::Ack(
         *message = last_error_;
         return rl::training::v1::MODEL_ACK_RESULT_NOT_FOUND;
     }
-    acknowledgements_.emplace(key, request);
-    acknowledgement_models_.emplace(
-        key,
-        ModelKey{request.model().model_lineage_id(),
-                 request.model().model_step()});
+    load_receipts_.push_back(request);
+    acknowledgements_.emplace(key, std::prev(load_receipts_.end()));
     latest_ack_aiserver_ = request.aiserver();
     latest_ack_model_ = request.model();
     latest_ack_status_ = request.load_status();
@@ -374,19 +373,38 @@ void ModelRegistry::PruneSettlementFactsLocked(
     const auto latest = latest_step_seen_.find(lineage_id);
     if (latest == latest_step_seen_.end()) return;
     const uint64_t latest_step = latest->second;
-    auto outside_retention = [&](const ModelKey& key) {
-        return key.lineage_id == lineage_id &&
-               key.step <= latest_step &&
-               latest_step - key.step >= config_.retention_steps;
-    };
-    for (auto iterator = acknowledgement_models_.begin();
-         iterator != acknowledgement_models_.end();) {
-        if (!outside_retention(iterator->second)) {
-            ++iterator;
-            continue;
+    for (auto it = load_receipts_.begin(); it != load_receipts_.end();) {
+        const auto& model = it->model();
+        if (model.model_lineage_id() == lineage_id && model.model_step() <= latest_step &&
+            latest_step - model.model_step() >= config_.retention_steps) {
+            acknowledgements_.erase(AckKey(*it));
+            it = load_receipts_.erase(it);
+        } else {
+            ++it;
         }
-        acknowledgements_.erase(iterator->first);
-        iterator = acknowledgement_models_.erase(iterator);
+    }
+}
+
+void ModelRegistry::GetLoadReceipt(
+    const rl::training::v1::GetModelLoadReceiptReq& request,
+    rl::training::v1::GetModelLoadReceiptRsp* response) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    FillDistributorIdentity(response->mutable_distributor());
+    const auto& model = request.model();
+    const auto latest = latest_step_seen_.find(model.model_lineage_id());
+    if (latest != latest_step_seen_.end() && model.model_step() <= latest->second &&
+        latest->second - model.model_step() >= config_.retention_steps) {
+        response->set_outside_retention(true);
+        return;
+    }
+    const auto source = ServiceKey(request.aiserver());
+    for (auto it = load_receipts_.rbegin(); it != load_receipts_.rend(); ++it) {
+        if (it->model().model_step() == model.model_step() &&
+            it->model().model_lineage_id() == model.model_lineage_id() &&
+            ServiceKey(it->aiserver()) == source) {
+            *response->mutable_receipt() = *it;
+            return;
+        }
     }
 }
 

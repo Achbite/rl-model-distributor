@@ -60,7 +60,9 @@ void TestRegisterManifestDownloadAck() {
 
     const auto manifest = Manifest(model_path);
 
-    ModelDistributorServiceImpl service(Config(temporary_root.path()));
+    auto config = Config(temporary_root.path());
+    config.retention_steps = 2;
+    ModelDistributorServiceImpl service(config);
     int port = 0;
     grpc::ServerBuilder builder;
     builder.AddListeningPort(
@@ -177,6 +179,51 @@ void TestRegisterManifestDownloadAck() {
                 observed.latest_ack_aiserver().SerializeAsString() == failed.aiserver().SerializeAsString() &&
                 observed.last_error() == failed.message(),
             "Status delivers FAILED identity, producer and original error to its consumer");
+
+    // Later loads from another actor or model must not hide the requested receipt.
+    auto read_load = [&](const rl::training::v1::AckModelReq& key) {
+        rl::training::v1::GetModelLoadReceiptReq query;
+        *query.mutable_aiserver() = key.aiserver();
+        *query.mutable_model() = key.model();
+        rl::training::v1::GetModelLoadReceiptRsp result;
+        grpc::ClientContext context;
+        Require(stub->GetModelLoadReceipt(&context, query, &result).ok(), "read exact load");
+        return result;
+    };
+    auto peer = ack_request;
+    peer.mutable_aiserver()->set_instance_id("another-server");
+    Require(!read_load(peer).has_receipt(), "peer without a load receipt stays absent");
+    grpc::ClientContext peer_context;
+    Require(stub->AckModel(&peer_context, peer, &ack_response).ok() &&
+            ack_response.result() == rl::training::v1::MODEL_ACK_RESULT_APPLIED, "peer loaded");
+    auto newer = register_request;
+    newer.mutable_manifest()->mutable_identity()->set_model_step(1);
+    grpc::ClientContext newer_context;
+    Require(stub->RegisterModel(&newer_context, newer, &register_response).ok() &&
+            register_response.result() == rl::training::v1::MODEL_REGISTER_RESULT_REGISTERED, "next version registered");
+    auto next_load = ack_request;
+    *next_load.mutable_model() = newer.manifest().identity();
+    next_load.set_load_instance_id("load-step-1");
+    grpc::ClientContext next_context;
+    Require(stub->AckModel(&next_context, next_load, &ack_response).ok() &&
+            ack_response.result() == rl::training::v1::MODEL_ACK_RESULT_APPLIED, "next version loaded");
+    grpc::ClientContext replay_context;
+    Require(stub->AckModel(&replay_context, second_load_request, &ack_response).ok() &&
+            ack_response.result() == rl::training::v1::MODEL_ACK_RESULT_ALREADY_APPLIED,
+            "replaying an earlier successful ACK preserves the later failure");
+    auto previous = read_load(ack_request);
+    Require(previous.receipt().SerializeAsString() == failed.SerializeAsString() &&
+            previous.distributor().SerializeAsString() == observed.distributor().SerializeAsString() &&
+            read_load(peer).receipt().SerializeAsString() == peer.SerializeAsString(),
+            "retained receipt keeps the exact actor, model, last applied load and original error");
+
+    newer.mutable_manifest()->mutable_identity()->set_model_step(2);
+    grpc::ClientContext retire_context;
+    Require(stub->RegisterModel(&retire_context, newer, &register_response).ok() &&
+            register_response.result() == rl::training::v1::MODEL_REGISTER_RESULT_REGISTERED, "advance retention");
+    const auto expired = read_load(peer);
+    Require(expired.outside_retention() && !expired.has_receipt(),
+            "retired bootstrap receipt is distinguished from a pending load");
 
     server->Shutdown();
     server->Wait();

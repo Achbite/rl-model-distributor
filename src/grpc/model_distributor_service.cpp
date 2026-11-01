@@ -136,6 +136,19 @@ grpc::Status ModelDistributorServiceImpl::AckModel(
     return grpc::Status::OK;
 }
 
+grpc::Status ModelDistributorServiceImpl::GetModelLoadReceipt(
+    grpc::ServerContext*,
+    const rl::training::v1::GetModelLoadReceiptReq* request,
+    rl::training::v1::GetModelLoadReceiptRsp* response) {
+    if (!ModelRegistry::ServiceIdentityValid(request->aiserver()) ||
+        !ModelRegistry::ModelIdentityValid(request->model())) {
+        return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                            "load receipt requires an AIServer lifecycle and model identity");
+    }
+    registry_.GetLoadReceipt(*request, response);
+    return grpc::Status::OK;
+}
+
 grpc::Status ModelDistributorServiceImpl::GetModelDistributorStatus(
     grpc::ServerContext*,
     const rl::training::v1::ModelDistributorStatusReq*,

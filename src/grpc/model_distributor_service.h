@@ -27,6 +27,10 @@ public:
         grpc::ServerContext* context,
         const rl::training::v1::AckModelReq* request,
         rl::training::v1::AckModelRsp* response) override;
+    grpc::Status GetModelLoadReceipt(
+        grpc::ServerContext* context,
+        const rl::training::v1::GetModelLoadReceiptReq* request,
+        rl::training::v1::GetModelLoadReceiptRsp* response) override;
     grpc::Status GetModelDistributorStatus(
         grpc::ServerContext* context,
         const rl::training::v1::ModelDistributorStatusReq* request,
